@@ -146,13 +146,19 @@
                 <div class="card-header">
                     <h2><i class="fas fa-tasks"></i> Encoding Queue</h2>
                     <div class="queue-controls">
-                        <button onclick="startQueue()" class="btn btn-success" id="startBtn">
-                            <i class="fas fa-play"></i> Start
+                        <button onclick="startEncoding()" class="btn btn-success" id="startBtn">
+                            <i class="fas fa-play"></i> Start Encoding
+                        </button>
+                        <button onclick="pauseJob()" class="btn btn-warning" id="pauseBtn" disabled>
+                            <i class="fas fa-pause"></i> Pause
+                        </button>
+                        <button onclick="resumeJob()" class="btn btn-success" id="resumeBtn" disabled>
+                            <i class="fas fa-play"></i> Resume
                         </button>
                         <button onclick="cancelJob()" class="btn btn-danger" id="cancelBtn" disabled>
                             <i class="fas fa-stop"></i> Cancel
                         </button>
-                        <button onclick="clearQueue()" class="btn btn-warning">
+                        <button onclick="clearQueue()" class="btn btn-secondary">
                             <i class="fas fa-trash"></i> Clear
                         </button>
                     </div>
@@ -229,12 +235,12 @@
                             <span class="metric-value" id="avgFps">0.0</span>
                         </div>
                         <div class="metric">
-                            <span class="metric-label">Bitrate:</span>
-                            <span class="metric-value" id="bitrate">0 kbps</span>
-                        </div>
-                        <div class="metric">
                             <span class="metric-label">ETA:</span>
                             <span class="metric-value" id="eta">--:--</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Status:</span>
+                            <span class="metric-value" id="encodingStatus">Idle</span>
                         </div>
                     </div>
                 </div>
@@ -350,42 +356,64 @@
         </main>
     </div>
 
-    <!-- Floating System Status Bar -->
-    <div class="floating-status-bar" id="floatingStatusBar">
-        <div class="floating-stats">
-            <div class="floating-stat">
-                <i class="fas fa-microchip"></i>
-                <span class="floating-label">CPU:</span>
-                <span class="floating-value" id="floatingCpu">0%</span>
+    <!-- Mobile System Status Button -->
+    <div class="mobile-status-button" id="mobileStatusButton" onclick="toggleMobileStatus()">
+        <i class="fas fa-chart-bar"></i>
+    </div>
+
+    <!-- Mobile System Status Panel -->
+    <div class="mobile-status-panel" id="mobileStatusPanel">
+        <div class="mobile-status-header">
+            <h3><i class="fas fa-server"></i> System Status</h3>
+            <button class="mobile-status-close" onclick="closeMobileStatus()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="mobile-status-content">
+            <div class="mobile-stat-grid">
+                <div class="mobile-stat">
+                    <i class="fas fa-microchip"></i>
+                    <div class="mobile-stat-info">
+                        <span class="mobile-stat-label">CPU Usage</span>
+                        <span class="mobile-stat-value" id="mobileCpu">0%</span>
+                    </div>
+                    <div class="mobile-stat-bar">
+                        <div class="mobile-stat-progress" id="mobileCpuBar"></div>
+                    </div>
+                </div>
+                <div class="mobile-stat">
+                    <i class="fas fa-memory"></i>
+                    <div class="mobile-stat-info">
+                        <span class="mobile-stat-label">RAM Usage</span>
+                        <span class="mobile-stat-value" id="mobileRam">0%</span>
+                    </div>
+                    <div class="mobile-stat-bar">
+                        <div class="mobile-stat-progress" id="mobileRamBar"></div>
+                    </div>
+                </div>
+                <div class="mobile-stat">
+                    <i class="fas fa-hard-drive"></i>
+                    <div class="mobile-stat-info">
+                        <span class="mobile-stat-label">Disk Usage</span>
+                        <span class="mobile-stat-value" id="mobileDisk">0%</span>
+                    </div>
+                    <div class="mobile-stat-bar">
+                        <div class="mobile-stat-progress" id="mobileDiskBar"></div>
+                    </div>
+                </div>
+                <div class="mobile-stat">
+                    <i class="fas fa-cogs"></i>
+                    <div class="mobile-stat-info">
+                        <span class="mobile-stat-label">Process</span>
+                        <span class="mobile-stat-value" id="mobileProcess">0% 0MB</span>
+                    </div>
+                </div>
             </div>
-            <div class="floating-stat">
-                <i class="fas fa-memory"></i>
-                <span class="floating-label">RAM:</span>
-                <span class="floating-value" id="floatingRam">0%</span>
-            </div>
-            <div class="floating-stat">
-                <i class="fas fa-hard-drive"></i>
-                <span class="floating-label">Disk:</span>
-                <span class="floating-value" id="floatingDisk">0%</span>
-            </div>
-            <div class="floating-stat">
-                <i class="fas fa-network-wired"></i>
-                <span class="floating-label">NET:</span>
-                <span class="floating-value" id="floatingNet">0/0</span>
-            </div>
-            <div class="floating-stat">
-                <i class="fas fa-cogs"></i>
-                <span class="floating-label">Process:</span>
-                <span class="floating-value" id="floatingProcess">0% 0MB</span>
-            </div>
-            <div class="floating-stat">
+            <div class="mobile-stat-time">
                 <i class="fas fa-clock"></i>
-                <span class="floating-value" id="floatingTime">00:00:00</span>
+                <span id="mobileTime">00:00:00</span>
             </div>
         </div>
-        <button class="floating-toggle" onclick="toggleFloatingStatus()">
-            <i class="fas fa-chevron-down" id="floatingToggleIcon"></i>
-        </button>
     </div>
 
     <!-- Preview Modal -->

@@ -3,15 +3,14 @@ let selectedFiles = new Set();
 let pollInterval = null;
 let systemStatsInterval = null;
 let encodingDetailsInterval = null;
+let historyInterval = null;
 let filesData = [];
 let queueData = [];
 let historyData = [];
 let currentSort = { field: 'name-asc', direction: 'asc' };
 let queueSort = { field: 'filename', direction: 'asc' };
 let historySort = { field: 'date', direction: 'desc' };
-let isFloatingBarCollapsed = false;
-let isDragging = false;
-let dragOffset = { x: 0, y: 0 };
+let expandedFolders = new Set();
 
 // DOM Elements
 const filesList = document.getElementById('filesList');
@@ -22,14 +21,19 @@ const presetUploadStatus = document.getElementById('presetUploadStatus');
 const queueTableBody = document.getElementById('queueTableBody');
 const currentJobContent = document.getElementById('currentJobContent');
 const startBtn = document.getElementById('startBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const resumeBtn = document.getElementById('resumeBtn');
 const cancelBtn = document.getElementById('cancelBtn');
 const historyTableBody = document.getElementById('historyTableBody');
 const statusText = document.getElementById('statusText');
 const globalProgressFill = document.getElementById('globalProgressFill');
 const globalProgressText = document.getElementById('globalProgressText');
 const statusIndicator = document.querySelector('.status-indicator');
-const floatingStatusBar = document.getElementById('floatingStatusBar');
-const floatingToggleIcon = document.getElementById('floatingToggleIcon');
+const encodingStatus = document.getElementById('encodingStatus');
+
+// Mobile elements
+const mobileStatusButton = document.getElementById('mobileStatusButton');
+const mobileStatusPanel = document.getElementById('mobileStatusPanel');
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -39,15 +43,10 @@ document.addEventListener('DOMContentLoaded', () => {
     startPolling();
     startSystemStatsPolling();
     startEncodingDetailsPolling();
+    startHistoryPolling();
     
     // Handle preset upload
     presetUpload.addEventListener('change', handlePresetUpload);
-    
-    // Setup floating bar dragging
-    setupFloatingBarDrag();
-    
-    // Load saved floating bar position
-    loadFloatingBarPosition();
     
     // Setup keyboard shortcuts
     setupKeyboardShortcuts();
@@ -55,6 +54,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize sort dropdown
     const sortSelect = document.getElementById('sortSelect');
     sortSelect.value = currentSort.field;
+    
+    // Setup mobile
+    setupMobile();
 });
 
 // File handling functions
@@ -101,70 +103,129 @@ function updateFilesList() {
     
     filesList.innerHTML = '';
     
-    filesData.forEach(file => {
-        const extension = getFileExtension(file.name);
+    // Flatten the hierarchical data for display
+    const flattenedFiles = flattenFiles(filesData, true);
+    
+    flattenedFiles.forEach(item => {
+        const extension = item.type === 'directory' ? 'folder' : getFileExtension(item.name);
         const fileType = getFileType(extension);
         const typeClass = `file-type-${extension.toLowerCase()}`;
-        const modifiedDate = file.modified ? formatDate(file.modified) : 'N/A';
+        const modifiedDate = item.modified ? formatDate(item.modified) : 'N/A';
+        const indent = item.level * 20;
+        const isExpanded = expandedFolders.has(item.path);
+        const isHidden = item.parentPath && !expandedFolders.has(item.parentPath);
         
         const fileRow = document.createElement('div');
-        fileRow.className = `file-row ${selectedFiles.has(file.name) ? 'selected' : ''}`;
-        fileRow.dataset.filename = file.name;
+        fileRow.className = `file-row ${item.type === 'directory' ? 'directory' : ''} ${isHidden ? 'hidden' : ''}`;
+        fileRow.dataset.filename = item.name;
+        fileRow.dataset.path = item.path;
+        fileRow.dataset.type = item.type;
+        fileRow.dataset.parent = item.parentPath || '';
         fileRow.tabIndex = 0;
+        
+        // Only show checkbox for files
+        const checkboxHtml = item.type === 'file' 
+            ? `<input type="checkbox" class="file-checkbox" 
+                      ${selectedFiles.has(item.path) ? 'checked' : ''}
+                      onchange="toggleFileSelection('${item.path}', this.checked, '${item.name}')">`
+            : '<div class="file-checkbox-placeholder"></div>';
+        
+        // Folder toggle button
+        const folderToggle = item.type === 'directory' 
+            ? `<div class="folder-toggle ${isExpanded ? 'expanded' : ''}" onclick="toggleFolder('${item.path}', event)">
+                   <i class="fas fa-chevron-right"></i>
+               </div>`
+            : '<div class="folder-toggle-placeholder"></div>';
         
         fileRow.innerHTML = `
             <div class="file-checkbox-cell">
-                <input type="checkbox" class="file-checkbox" 
-                       ${selectedFiles.has(file.name) ? 'checked' : ''}
-                       onchange="toggleFileSelection('${file.name}', this.checked)">
+                ${checkboxHtml}
             </div>
             <div class="file-info-cell">
-                <i class="fas ${getFileIcon(extension)} ${typeClass} file-icon"></i>
-                <div class="file-details">
-                    <div class="file-name" title="${file.name}">${file.name}</div>
-                    <span class="file-extension">${extension.toUpperCase()}</span>
+                <div class="file-indent" style="margin-left: ${indent}px">
+                    ${folderToggle}
+                    <i class="fas ${getFileIcon(extension)} ${typeClass} file-icon"></i>
+                    <div class="file-details">
+                        <div class="file-name" title="${item.name}">${item.name}</div>
+                        ${item.type === 'file' ? `<span class="file-extension">${extension.toUpperCase()}</span>` : ''}
+                    </div>
                 </div>
             </div>
-            <div class="file-size-cell">${file.size_display}</div>
+            <div class="file-size-cell">${item.size_display}</div>
             <div class="file-type-cell">${fileType}</div>
             <div class="file-date-cell">${modifiedDate}</div>
             <div class="file-actions-cell">
-                <button class="preview-btn" onclick="showFilePreview('${file.name}')">
-                    <i class="fas fa-eye"></i>
-                </button>
+                ${item.type === 'file' ? 
+                    `<button class="preview-btn" onclick="showFilePreview('${item.name}', '${item.path}')">
+                        <i class="fas fa-eye"></i>
+                    </button>` : ''
+                }
             </div>
         `;
         
-        // Click anywhere on row to select
-        fileRow.addEventListener('click', (e) => {
-            if (!e.target.classList.contains('file-checkbox') && 
-                !e.target.classList.contains('preview-btn') &&
-                !e.target.closest('.preview-btn')) {
-                const checkbox = fileRow.querySelector('.file-checkbox');
-                checkbox.checked = !checkbox.checked;
-                toggleFileSelection(file.name, checkbox.checked);
-            }
-        });
-        
-        // Keyboard navigation
-        fileRow.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                const checkbox = fileRow.querySelector('.file-checkbox');
-                checkbox.checked = !checkbox.checked;
-                toggleFileSelection(file.name, checkbox.checked);
-            }
-        });
+        // Click anywhere on row to select (only for files)
+        if (item.type === 'file') {
+            fileRow.addEventListener('click', (e) => {
+                if (!e.target.classList.contains('file-checkbox') && 
+                    !e.target.classList.contains('preview-btn') &&
+                    !e.target.closest('.preview-btn') &&
+                    !e.target.closest('.folder-toggle')) {
+                    const checkbox = fileRow.querySelector('.file-checkbox');
+                    checkbox.checked = !checkbox.checked;
+                    toggleFileSelection(item.path, checkbox.checked, item.name);
+                }
+            });
+            
+            // Keyboard navigation
+            fileRow.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    const checkbox = fileRow.querySelector('.file-checkbox');
+                    checkbox.checked = !checkbox.checked;
+                    toggleFileSelection(item.path, checkbox.checked, item.name);
+                }
+            });
+        }
         
         filesList.appendChild(fileRow);
     });
     
-    updateCounts(filesData.length, selectedFiles.size);
+    const fileCount = flattenedFiles.filter(f => f.type === 'file').length;
+    updateCounts(fileCount, selectedFiles.size);
     updateSelectAllCheckbox();
     updateSortIndicators();
 }
 
 // Helper functions
+function flattenFiles(items, includeHidden = false, parentPath = '', result = []) {
+    items.forEach(item => {
+        const flattenedItem = {
+            ...item,
+            parentPath: parentPath
+        };
+        result.push(flattenedItem);
+        
+        if (item.children && item.children.length > 0) {
+            if (includeHidden || expandedFolders.has(item.path)) {
+                flattenFiles(item.children, includeHidden, item.path, result);
+            }
+        }
+    });
+    return result;
+}
+
+function toggleFolder(path, event) {
+    event.stopPropagation();
+    
+    if (expandedFolders.has(path)) {
+        expandedFolders.delete(path);
+    } else {
+        expandedFolders.add(path);
+    }
+    
+    updateFilesList();
+}
+
 function getFileExtension(filename) {
     return filename.slice((filename.lastIndexOf(".") - 1 >>> 0) + 2) || 'unknown';
 }
@@ -173,12 +234,14 @@ function getFileType(extension) {
     const videoExtensions = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v'];
     const audioExtensions = ['mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a'];
     
+    if (extension === 'folder') return 'Folder';
     if (videoExtensions.includes(extension.toLowerCase())) return 'Video';
     if (audioExtensions.includes(extension.toLowerCase())) return 'Audio';
     return 'File';
 }
 
 function getFileIcon(extension) {
+    if (extension === 'folder') return 'fa-folder';
     const videoExtensions = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v'];
     const audioExtensions = ['mp3', 'wav', 'flac', 'aac', 'ogg', 'wma', 'm4a'];
     
@@ -202,10 +265,12 @@ function formatDate(timestamp) {
 
 // Sorting functions
 function sortFilesData() {
+    // Flatten files for sorting
+    const flattened = flattenFiles(filesData, true);
     const [field, direction] = currentSort.field.split('-');
     const dir = direction === 'desc' ? -1 : 1;
     
-    filesData.sort((a, b) => {
+    flattened.sort((a, b) => {
         let valA, valB;
         
         switch(field) {
@@ -222,8 +287,8 @@ function sortFilesData() {
                 valB = b.modified;
                 break;
             case 'type':
-                valA = getFileExtension(a.name).toLowerCase();
-                valB = getFileExtension(b.name).toLowerCase();
+                valA = a.type;
+                valB = b.type;
                 break;
             default:
                 return 0;
@@ -233,6 +298,32 @@ function sortFilesData() {
         if (valA > valB) return 1 * dir;
         return 0;
     });
+    
+    // Rebuild hierarchical structure
+    const sortedStructure = rebuildHierarchy(flattened);
+    filesData = sortedStructure;
+}
+
+function rebuildHierarchy(sortedItems) {
+    const result = [];
+    const map = new Map();
+    
+    // Create a map of all items
+    sortedItems.forEach(item => {
+        map.set(item.path, { ...item, children: [] });
+    });
+    
+    // Build hierarchy
+    sortedItems.forEach(item => {
+        const parentPath = item.parentPath;
+        if (parentPath && map.has(parentPath)) {
+            map.get(parentPath).children.push(map.get(item.path));
+        } else {
+            result.push(map.get(item.path));
+        }
+    });
+    
+    return result;
 }
 
 function toggleSort(field) {
@@ -258,12 +349,10 @@ function sortFiles() {
 }
 
 function updateSortIndicators() {
-    // Clear all indicators
     document.querySelectorAll('.sort-indicator').forEach(indicator => {
         indicator.className = 'sort-indicator';
     });
     
-    // Set active indicator
     const [field, direction] = currentSort.field.split('-');
     const indicator = document.getElementById(`sort-${field}`);
     if (indicator) {
@@ -398,30 +487,36 @@ function updateCounts(total, selected) {
         : `${selected} file${selected !== 1 ? 's' : ''} selected`;
 }
 
-function toggleFileSelection(filename, isSelected) {
+function toggleFileSelection(filepath, isSelected, filename) {
     if (isSelected) {
-        selectedFiles.add(filename);
+        selectedFiles.add(filepath);
     } else {
-        selectedFiles.delete(filename);
+        selectedFiles.delete(filepath);
     }
     
-    const row = document.querySelector(`.file-row[data-filename="${filename}"]`);
+    const row = document.querySelector(`.file-row[data-path="${filepath}"]`);
     if (row) {
-        row.classList.toggle('selected', isSelected);
-        row.querySelector('.file-checkbox').checked = isSelected;
+        const checkbox = row.querySelector('.file-checkbox');
+        if (checkbox) {
+            checkbox.checked = isSelected;
+            row.classList.toggle('selected', isSelected);
+        }
     }
     
     updateSelectAllCheckbox();
-    updateCounts(filesData.length, selectedFiles.size);
+    const fileCount = flattenFiles(filesData, true).filter(f => f.type === 'file').length;
+    updateCounts(fileCount, selectedFiles.size);
 }
 
 function selectAllFiles() {
     const checkboxes = document.querySelectorAll('.file-checkbox');
     checkboxes.forEach(checkbox => {
         if (!checkbox.checked) {
-            const filename = checkbox.closest('.file-row').dataset.filename;
+            const row = checkbox.closest('.file-row');
+            const filepath = row.dataset.path;
+            const filename = row.dataset.filename;
             checkbox.checked = true;
-            toggleFileSelection(filename, true);
+            toggleFileSelection(filepath, true, filename);
         }
     });
 }
@@ -430,9 +525,11 @@ function deselectAllFiles() {
     const checkboxes = document.querySelectorAll('.file-checkbox');
     checkboxes.forEach(checkbox => {
         if (checkbox.checked) {
-            const filename = checkbox.closest('.file-row').dataset.filename;
+            const row = checkbox.closest('.file-row');
+            const filepath = row.dataset.path;
+            const filename = row.dataset.filename;
             checkbox.checked = false;
-            toggleFileSelection(filename, false);
+            toggleFileSelection(filepath, false, filename);
         }
     });
 }
@@ -500,6 +597,12 @@ async function loadHistory() {
     }
 }
 
+// Start history polling
+function startHistoryPolling() {
+    loadHistory();
+    historyInterval = setInterval(loadHistory, 3000); // Reload every 3 seconds
+}
+
 function updateHistoryDisplay() {
     historyTableBody.innerHTML = '';
     
@@ -555,12 +658,17 @@ async function addToQueue() {
         let successCount = 0;
         let errorCount = 0;
         
-        for (const filename of files) {
+        for (const filepath of files) {
             try {
                 const response = await fetch('/queue/add', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ file: filename, preset, format })
+                    body: JSON.stringify({ 
+                        file: filepath.split('/').pop(), 
+                        path: filepath,
+                        preset, 
+                        format 
+                    })
                 });
                 
                 const data = await response.json();
@@ -569,11 +677,11 @@ async function addToQueue() {
                     successCount++;
                 } else {
                     errorCount++;
-                    console.error(`Failed to add ${filename}:`, data.error);
+                    console.error(`Failed to add ${filepath}:`, data.error);
                 }
             } catch (error) {
                 errorCount++;
-                console.error(`Error adding ${filename}:`, error);
+                console.error(`Error adding ${filepath}:`, error);
             }
         }
         
@@ -610,7 +718,11 @@ async function updateQueueDisplay() {
         
         // Update status indicator
         if (data.current) {
-            updateStatusIndicator('encoding');
+            if (data.paused) {
+                updateStatusIndicator('paused');
+            } else {
+                updateStatusIndicator('encoding');
+            }
         } else if (data.queue.length > 0) {
             updateStatusIndicator('queued');
         } else {
@@ -622,8 +734,7 @@ async function updateQueueDisplay() {
             document.getElementById('currentJobProgress').style.width = `${data.current.progress}%`;
             document.getElementById('currentJobPercent').textContent = `${Math.round(data.current.progress)}%`;
             
-            // Get current output size (use current_output_size if encoding, otherwise output_size)
-            const currentOutputSize = data.current.status === 'encoding' 
+            const currentOutputSize = data.current.status === 'encoding' || data.current.status === 'paused'
                 ? (data.current.current_output_size || data.current.output_size)
                 : data.current.output_size;
             
@@ -658,14 +769,20 @@ async function updateQueueDisplay() {
                 </div>
             `;
             
+            // Update control buttons
             startBtn.disabled = true;
+            pauseBtn.disabled = data.current.status !== 'encoding';
+            resumeBtn.disabled = data.current.status !== 'paused';
             cancelBtn.disabled = false;
             
         } else {
             document.getElementById('currentJobProgress').style.width = '0%';
             document.getElementById('currentJobPercent').textContent = '0%';
             currentJobContent.innerHTML = `<div class="no-job">No active encoding job</div>`;
+            
             startBtn.disabled = data.queue.length === 0;
+            pauseBtn.disabled = true;
+            resumeBtn.disabled = true;
             cancelBtn.disabled = true;
         }
         
@@ -687,11 +804,10 @@ async function updateQueueDisplay() {
         // Add queued jobs
         queueData.forEach((job, index) => {
             const row = document.createElement('tr');
-            row.className = job.status === 'encoding' ? 'encoding' : job.status === 'completed' ? 'completed' : job.status === 'failed' ? 'failed' : job.status === 'cancelled' ? 'cancelled' : '';
-            
             const statusClass = {
                 'queued': 'status-queued',
                 'encoding': 'status-encoding',
+                'paused': 'status-paused',
                 'completed': 'status-completed',
                 'failed': 'status-failed',
                 'cancelled': 'status-cancelled'
@@ -699,8 +815,9 @@ async function updateQueueDisplay() {
             
             const statusText = job.status.charAt(0).toUpperCase() + job.status.slice(1);
             
-            // Show current output size for encoding jobs, final output size for completed
-            const outputSizeDisplay = job.status === 'encoding' 
+            row.className = job.status;
+            
+            const outputSizeDisplay = job.status === 'encoding' || job.status === 'paused'
                 ? (job.current_output_size || job.output_size || '-')
                 : (job.output_size || '-');
             
@@ -723,7 +840,7 @@ async function updateQueueDisplay() {
                         <button onclick="moveInQueue('${job.id}', 'down')" class="btn btn-sm btn-secondary" ${index === queueData.length - 1 || job.status !== 'queued' ? 'disabled' : ''}>
                             <i class="fas fa-arrow-down"></i>
                         </button>
-                        <button onclick="removeFromQueue('${job.id}')" class="btn btn-sm btn-danger" ${job.status === 'encoding' ? 'disabled' : ''}>
+                        <button onclick="removeFromQueue('${job.id}')" class="btn btn-sm btn-danger" ${job.status === 'encoding' || job.status === 'paused' ? 'disabled' : ''}>
                             <i class="fas fa-times"></i>
                         </button>
                     </div>
@@ -787,9 +904,45 @@ async function clearQueue() {
     }
 }
 
-async function startQueue() {
-    updateQueueDisplay();
-    showNotification('Started encoding queue', 'success');
+// Start encoding
+async function startEncoding() {
+    try {
+        const response = await fetch('/start', { method: 'POST' });
+        const data = await response.json();
+        
+        if (response.ok) {
+            showNotification('Encoding started', 'success');
+            updateQueueDisplay();
+        } else {
+            showNotification(data.error || 'Failed to start encoding', 'error');
+        }
+    } catch (error) {
+        console.error('Error starting encoding:', error);
+        showNotification('Failed to start encoding', 'error');
+    }
+}
+
+// Pause/Resume/Cancel
+async function pauseJob() {
+    try {
+        await fetch('/pause', { method: 'POST' });
+        updateQueueDisplay();
+        showNotification('Encoding paused', 'warning');
+    } catch (error) {
+        console.error('Error pausing job:', error);
+        showNotification('Failed to pause encoding', 'error');
+    }
+}
+
+async function resumeJob() {
+    try {
+        await fetch('/resume', { method: 'POST' });
+        updateQueueDisplay();
+        showNotification('Encoding resumed', 'success');
+    } catch (error) {
+        console.error('Error resuming job:', error);
+        showNotification('Failed to resume encoding', 'error');
+    }
 }
 
 async function cancelJob() {
@@ -820,7 +973,6 @@ async function updateEncodingDetails() {
         const currentFpsElement = document.getElementById('currentFps');
         const avgFpsElement = document.getElementById('avgFps');
         
-        // Animate FPS changes
         if (parseFloat(currentFpsElement.textContent) !== details.current_fps) {
             currentFpsElement.classList.remove('fps-high', 'fps-low');
             if (details.current_fps > 30) currentFpsElement.classList.add('fps-high');
@@ -836,7 +988,6 @@ async function updateEncodingDetails() {
         // Update values
         currentFpsElement.textContent = details.current_fps.toFixed(1);
         avgFpsElement.textContent = details.average_fps.toFixed(1);
-        document.getElementById('bitrate').textContent = `${details.bitrate} kbps`;
         document.getElementById('eta').textContent = details.eta;
         document.getElementById('inputFile').textContent = details.input_file;
         document.getElementById('inputSize').textContent = details.input_size;
@@ -846,6 +997,10 @@ async function updateEncodingDetails() {
         document.getElementById('encodingFormat').textContent = details.format;
         document.getElementById('timeElapsed').textContent = details.time_elapsed;
         document.getElementById('timeRemaining').textContent = details.time_remaining;
+        
+        // Update encoding status
+        encodingStatus.textContent = details.paused ? 'Paused' : 
+                                   details.input_file !== '-' ? 'Encoding' : 'Idle';
         
         // Update encoding log
         const encodingLog = document.getElementById('encodingLog');
@@ -858,7 +1013,6 @@ async function updateEncodingDetails() {
                 encodingLog.appendChild(logEntry);
             });
             
-            // Auto-scroll to bottom
             encodingLog.scrollTop = encodingLog.scrollHeight;
         }
         
@@ -873,7 +1027,7 @@ function clearEncodingLog() {
 }
 
 // File preview
-function showFilePreview(filename) {
+function showFilePreview(filename, filepath) {
     const previewModal = document.getElementById('previewModal');
     const previewBody = document.getElementById('previewBody');
     
@@ -892,11 +1046,11 @@ function showFilePreview(filename) {
             </div>
             <div class="preview-info-item">
                 <div class="preview-label">Location</div>
-                <div class="preview-value">media/${filename}</div>
+                <div class="preview-value">media/${filepath}</div>
             </div>
         </div>
         <div class="preview-actions">
-            <button class="btn btn-lavender" onclick="addSingleFileToQueue('${filename}')">
+            <button class="btn btn-lavender" onclick="addSingleFileToQueue('${filename}', '${filepath}')">
                 <i class="fas fa-plus-circle"></i> Add to Queue
             </button>
             <button class="btn btn-secondary" onclick="closeFilePreview()">
@@ -907,12 +1061,10 @@ function showFilePreview(filename) {
     
     previewModal.style.display = 'flex';
     
-    // Close modal when clicking outside
     previewModal.addEventListener('click', (e) => {
         if (e.target === previewModal) closeFilePreview();
     });
     
-    // Close with Escape
     const closeOnEscape = (e) => {
         if (e.key === 'Escape') closeFilePreview();
     };
@@ -930,7 +1082,7 @@ function closeFilePreview() {
     }
 }
 
-async function addSingleFileToQueue(filename) {
+async function addSingleFileToQueue(filename, filepath) {
     const preset = presetSelect.value;
     const format = formatSelect.value;
     
@@ -944,7 +1096,12 @@ async function addSingleFileToQueue(filename) {
         const response = await fetch('/queue/add', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ file: filename, preset, format })
+            body: JSON.stringify({ 
+                file: filename, 
+                path: filepath,
+                preset, 
+                format 
+            })
         });
         
         if (response.ok) {
@@ -998,7 +1155,7 @@ async function handlePresetUpload() {
             presetUploadStatus.textContent = '';
             presetUploadStatus.style.background = '';
             presetUploadStatus.style.color = '';
-        }, 5000);
+        }, 3000);
         
         presetUpload.value = '';
         
@@ -1022,13 +1179,17 @@ async function updateSystemStats() {
         const response = await fetch('/system-stats');
         const stats = await response.json();
         
-        // Update floating bar
-        document.getElementById('floatingCpu').textContent = `${stats.cpu.toFixed(1)}%`;
-        document.getElementById('floatingRam').textContent = `${stats.ram.toFixed(1)}%`;
-        document.getElementById('floatingDisk').textContent = `${stats.disk.toFixed(1)}%`;
-        document.getElementById('floatingNet').textContent = `${stats.network.sent_mb.toFixed(1)}/${stats.network.recv_mb.toFixed(1)}`;
-        document.getElementById('floatingProcess').textContent = `${stats.process_cpu.toFixed(1)}% ${stats.process_ram_mb.toFixed(1)}MB`;
-        document.getElementById('floatingTime').textContent = stats.timestamp;
+        // Update mobile panel
+        document.getElementById('mobileCpu').textContent = `${stats.cpu.toFixed(1)}%`;
+        document.getElementById('mobileRam').textContent = `${stats.ram.toFixed(1)}%`;
+        document.getElementById('mobileDisk').textContent = `${stats.disk.toFixed(1)}%`;
+        document.getElementById('mobileProcess').textContent = `${stats.process_cpu.toFixed(1)}% ${stats.process_ram_mb.toFixed(1)}MB`;
+        document.getElementById('mobileTime').textContent = stats.timestamp;
+        
+        // Update progress bars
+        document.getElementById('mobileCpuBar').style.width = `${stats.cpu}%`;
+        document.getElementById('mobileRamBar').style.width = `${stats.ram}%`;
+        document.getElementById('mobileDiskBar').style.width = `${stats.disk}%`;
         
     } catch (error) {
         console.error('Error updating system stats:', error);
@@ -1044,6 +1205,9 @@ function updateStatusIndicator(status) {
         case 'encoding':
             statusIndicator.classList.add('encoding');
             break;
+        case 'paused':
+            statusIndicator.classList.add('paused');
+            break;
         case 'error':
             statusIndicator.classList.add('error');
             break;
@@ -1055,132 +1219,30 @@ function updateStatusIndicator(status) {
     }
 }
 
-// Floating status bar
-function toggleFloatingStatus() {
-    isFloatingBarCollapsed = !isFloatingBarCollapsed;
+// Mobile setup
+function setupMobile() {
+    // Detect mobile
+    const isMobile = window.innerWidth <= 768;
     
-    if (isFloatingBarCollapsed) {
-        floatingStatusBar.classList.add('collapsed');
-        floatingToggleIcon.className = 'fas fa-chevron-up';
-    } else {
-        floatingStatusBar.classList.remove('collapsed');
-        floatingToggleIcon.className = 'fas fa-chevron-down';
-    }
-    
-    // Save state
-    localStorage.setItem('floatingBarCollapsed', isFloatingBarCollapsed);
-}
-
-function setupFloatingBarDrag() {
-    floatingStatusBar.addEventListener('mousedown', startDrag);
-    floatingStatusBar.addEventListener('touchstart', startDragTouch);
-    
-    function startDrag(e) {
-        e.preventDefault();
-        isDragging = true;
-        dragOffset.x = e.clientX - floatingStatusBar.offsetLeft;
-        dragOffset.y = e.clientY - floatingStatusBar.offsetTop;
-        
-        floatingStatusBar.classList.add('dragging');
-        document.addEventListener('mousemove', drag);
-        document.addEventListener('mouseup', stopDrag);
-    }
-    
-    function startDragTouch(e) {
-        if (e.touches.length === 1) {
-            e.preventDefault();
-            isDragging = true;
-            const touch = e.touches[0];
-            dragOffset.x = touch.clientX - floatingStatusBar.offsetLeft;
-            dragOffset.y = touch.clientY - floatingStatusBar.offsetTop;
-            
-            floatingStatusBar.classList.add('dragging');
-            document.addEventListener('touchmove', dragTouch, { passive: false });
-            document.addEventListener('touchend', stopDragTouch);
-        }
-    }
-    
-    function drag(e) {
-        if (!isDragging) return;
-        e.preventDefault();
-        
-        let x = e.clientX - dragOffset.x;
-        let y = e.clientY - dragOffset.y;
-        
-        // Constrain to window bounds
-        const maxX = window.innerWidth - floatingStatusBar.offsetWidth;
-        const maxY = window.innerHeight - floatingStatusBar.offsetHeight;
-        
-        x = Math.max(0, Math.min(x, maxX));
-        y = Math.max(20, Math.min(y, maxY - 20)); // Keep some margin from bottom
-        
-        floatingStatusBar.style.left = `${x}px`;
-        floatingStatusBar.style.top = `${y}px`;
-        floatingStatusBar.style.transform = 'none';
-        
-        // Save position
-        saveFloatingBarPosition(x, y);
-    }
-    
-    function dragTouch(e) {
-        if (!isDragging || e.touches.length !== 1) return;
-        e.preventDefault();
-        
-        const touch = e.touches[0];
-        let x = touch.clientX - dragOffset.x;
-        let y = touch.clientY - dragOffset.y;
-        
-        // Constrain to window bounds
-        const maxX = window.innerWidth - floatingStatusBar.offsetWidth;
-        const maxY = window.innerHeight - floatingStatusBar.offsetHeight;
-        
-        x = Math.max(0, Math.min(x, maxX));
-        y = Math.max(20, Math.min(y, maxY - 20));
-        
-        floatingStatusBar.style.left = `${x}px`;
-        floatingStatusBar.style.top = `${y}px`;
-        floatingStatusBar.style.transform = 'none';
-        
-        // Save position
-        saveFloatingBarPosition(x, y);
-    }
-    
-    function stopDrag() {
-        isDragging = false;
-        floatingStatusBar.classList.remove('dragging');
-        document.removeEventListener('mousemove', drag);
-        document.removeEventListener('mouseup', stopDrag);
-    }
-    
-    function stopDragTouch() {
-        isDragging = false;
-        floatingStatusBar.classList.remove('dragging');
-        document.removeEventListener('touchmove', dragTouch);
-        document.removeEventListener('touchend', stopDragTouch);
+    if (isMobile) {
+        mobileStatusButton.style.display = 'flex';
     }
 }
 
-function saveFloatingBarPosition(x, y) {
-    localStorage.setItem('floatingBarPosition', JSON.stringify({ x, y }));
+function toggleMobileStatus() {
+    mobileStatusPanel.style.display = mobileStatusPanel.style.display === 'block' ? 'none' : 'block';
 }
 
-function loadFloatingBarPosition() {
-    const saved = localStorage.getItem('floatingBarPosition');
-    const collapsed = localStorage.getItem('floatingBarCollapsed') === 'true';
-    
-    if (saved) {
-        const { x, y } = JSON.parse(saved);
-        floatingStatusBar.style.left = `${x}px`;
-        floatingStatusBar.style.top = `${y}px`;
-        floatingStatusBar.style.transform = 'none';
-    }
-    
-    if (collapsed) {
-        isFloatingBarCollapsed = true;
-        floatingStatusBar.classList.add('collapsed');
-        floatingToggleIcon.className = 'fas fa-chevron-up';
-    }
+function closeMobileStatus() {
+    mobileStatusPanel.style.display = 'none';
 }
+
+// Click outside to close mobile panel
+document.addEventListener('click', (e) => {
+    if (!mobileStatusPanel.contains(e.target) && !mobileStatusButton.contains(e.target)) {
+        mobileStatusPanel.style.display = 'none';
+    }
+});
 
 // Polling
 function startPolling() {
@@ -1202,16 +1264,13 @@ function refreshFiles() {
 
 // Notifications
 function showNotification(message, type) {
-    // Remove existing notifications
     const existing = document.querySelectorAll('.notification');
     existing.forEach(n => n.remove());
     
-    // Create notification
     const notification = document.createElement('div');
     notification.className = `notification ${type}`;
     notification.textContent = message;
     
-    // Style based on type
     let bgColor, borderColor;
     switch (type) {
         case 'success':
@@ -1255,7 +1314,6 @@ function showNotification(message, type) {
     
     document.body.appendChild(notification);
     
-    // Remove after 5 seconds
     setTimeout(() => {
         notification.style.animation = 'slideOut 0.3s ease';
         setTimeout(() => {
@@ -1314,8 +1372,9 @@ function setupKeyboardShortcuts() {
             const checkbox = row.querySelector('.file-checkbox');
             if (checkbox) {
                 checkbox.checked = !checkbox.checked;
+                const filepath = row.dataset.path;
                 const filename = row.dataset.filename;
-                toggleFileSelection(filename, checkbox.checked);
+                toggleFileSelection(filepath, checkbox.checked, filename);
             }
         }
         
@@ -1338,17 +1397,5 @@ window.addEventListener('beforeunload', () => {
     if (pollInterval) clearInterval(pollInterval);
     if (systemStatsInterval) clearInterval(systemStatsInterval);
     if (encodingDetailsInterval) clearInterval(encodingDetailsInterval);
-});
-
-// Handle window resize
-window.addEventListener('resize', () => {
-    // Re-center floating bar if it's off screen
-    const rect = floatingStatusBar.getBoundingClientRect();
-    if (rect.right > window.innerWidth || rect.bottom > window.innerHeight || rect.left < 0 || rect.top < 0) {
-        floatingStatusBar.style.left = '50%';
-        floatingStatusBar.style.top = 'auto';
-        floatingStatusBar.style.bottom = '20px';
-        floatingStatusBar.style.transform = 'translateX(-50%)';
-        saveFloatingBarPosition(floatingStatusBar.offsetLeft, floatingStatusBar.offsetTop);
-    }
+    if (historyInterval) clearInterval(historyInterval);
 });

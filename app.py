@@ -5,6 +5,7 @@ import threading
 import re
 import json
 import psutil
+import shutil
 from flask import Flask, jsonify, request, render_template
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ load_dotenv("config.env")
 MEDIA_DIR = os.getenv("MEDIA_DIR", "./media")
 PRESET_DIR = os.getenv("PRESET_DIR", "./presets")
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "./output")
+TEMP_DIR = os.getenv("TEMP_DIR", "./temp")
 
 app = Flask(__name__)
 
@@ -27,13 +29,13 @@ app = Flask(__name__)
 encoding_queue = []
 current_job = None
 current_process = None
+paused = False
 progress_percent = 0
 status_message = "Idle"
 encoding_history = []
 encoding_details = {
     'current_fps': 0.0,
     'average_fps': 0.0,
-    'bitrate': 0,
     'eta': '--:--',
     'time_elapsed': '00:00',
     'time_remaining': '00:00',
@@ -42,13 +44,13 @@ encoding_details = {
     'total_frames': 0,
     'start_timestamp': None,
     'fps_history': deque(maxlen=60),
-    'bitrate_history': deque(maxlen=60)
 }
 
 class EncodingJob:
-    def __init__(self, file_id, filename, preset, output_format):
+    def __init__(self, file_id, filename, preset, output_format, file_path=None):
         self.id = file_id
         self.filename = filename
+        self.file_path = file_path  # Full path for files in subdirectories
         self.preset = preset
         self.output_format = output_format
         self.status = "queued"
@@ -60,11 +62,11 @@ class EncodingJob:
         self.error = None
         self.current_fps = 0.0
         self.average_fps = 0.0
-        self.bitrate = 0
         self.time_elapsed = '00:00'
         self.time_remaining = '--:--'
         self.eta = '--:--'
         self.current_output_size = 0  # Track current size during encoding
+        self.temp_output_path = None
 
 def get_file_size(path):
     """Get file size in MB"""
@@ -74,7 +76,7 @@ def get_file_size(path):
 
 def format_time(seconds):
     """Convert seconds to MM:SS or HH:MM:SS format"""
-    if seconds < 0:
+    if seconds is None or seconds < 0:
         return "--:--"
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -85,11 +87,18 @@ def format_time(seconds):
     return f"{minutes:02d}:{seconds:02d}"
 
 def run_encode(job):
-    global current_process, progress_percent, status_message, current_job, encoding_details
+    global current_process, progress_percent, status_message, current_job, encoding_details, paused
     
-    input_path = os.path.join(MEDIA_DIR, job.filename)
+    input_path = job.file_path if job.file_path else os.path.join(MEDIA_DIR, job.filename)
+    
+    # Create temp filename
+    temp_filename = f"temp_{job.id}_{job.filename}"
     output_filename = os.path.splitext(job.filename)[0] + f".{job.output_format}"
-    output_path = os.path.join(OUTPUT_DIR, output_filename)
+    
+    # Create temp output path
+    job.temp_output_path = os.path.join(TEMP_DIR, temp_filename)
+    final_output_path = os.path.join(OUTPUT_DIR, output_filename)
+    
     preset_path = os.path.join(PRESET_DIR, job.preset)
     
     # Get input file size
@@ -99,7 +108,6 @@ def run_encode(job):
     encoding_details.update({
         'current_fps': 0.0,
         'average_fps': 0.0,
-        'bitrate': 0,
         'eta': '--:--',
         'time_elapsed': '00:00',
         'time_remaining': '00:00',
@@ -108,13 +116,12 @@ def run_encode(job):
         'total_frames': 0,
         'start_timestamp': datetime.now(),
         'fps_history': deque(maxlen=60),
-        'bitrate_history': deque(maxlen=60)
     })
     
     cmd = [
         "HandBrakeCLI",
         "-i", input_path,
-        "-o", output_path,
+        "-o", job.temp_output_path,
         "--preset-import-file", preset_path,
         "--verbose"
     ]
@@ -125,10 +132,10 @@ def run_encode(job):
     progress_percent = 0
     status_message = f"Encoding: {job.filename}"
     
-    # Clear output file if exists
-    if os.path.exists(output_path):
+    # Clear temp file if exists
+    if os.path.exists(job.temp_output_path):
         try:
-            os.remove(output_path)
+            os.remove(job.temp_output_path)
         except:
             pass
     
@@ -146,8 +153,8 @@ def run_encode(job):
         def monitor_output_size():
             while current_process and current_process.poll() is None:
                 try:
-                    if os.path.exists(output_path):
-                        job.current_output_size = get_file_size(output_path)
+                    if os.path.exists(job.temp_output_path):
+                        job.current_output_size = get_file_size(job.temp_output_path)
                     else:
                         job.current_output_size = 0
                 except:
@@ -159,6 +166,10 @@ def run_encode(job):
         monitor_thread.start()
         
         for line in current_process.stdout:
+            # Check if paused
+            while paused and current_process and current_process.poll() is None:
+                time.sleep(0.5)
+            
             # Add to log (limit to last 100 lines)
             encoding_details['encoding_log'].append({
                 'timestamp': datetime.now().isoformat(),
@@ -187,13 +198,6 @@ def run_encode(job):
                     encoding_details['average_fps'] = round(avg_fps, 1)
                     job.average_fps = round(avg_fps, 1)
             
-            # Extract bitrate
-            bitrate_match = re.search(r'(\d+\.\d+|\d+)\s*kbps', line.lower())
-            if bitrate_match:
-                bitrate = int(float(bitrate_match.group(1)))
-                encoding_details['bitrate'] = bitrate
-                job.bitrate = bitrate
-            
             # Extract frame information
             frame_match = re.search(r'frame\s+(\d+)\s+of\s+(\d+)', line.lower())
             if frame_match:
@@ -207,20 +211,21 @@ def run_encode(job):
                     progress_percent = (current_frame / total_frames) * 100
                     job.progress = progress_percent
                     
-                    # Calculate ETA if we have FPS
-                    if encoding_details['current_fps'] > 0:
-                        frames_remaining = total_frames - current_frame
-                        seconds_remaining = frames_remaining / encoding_details['current_fps']
-                        
-                        encoding_details['eta'] = format_time(seconds_remaining)
-                        encoding_details['time_remaining'] = format_time(seconds_remaining)
-                        job.eta = format_time(seconds_remaining)
-                        job.time_remaining = format_time(seconds_remaining)
-                        
-                        # Calculate time elapsed
+                    # Calculate time elapsed
+                    if encoding_details['start_timestamp']:
                         time_elapsed = (datetime.now() - encoding_details['start_timestamp']).total_seconds()
                         encoding_details['time_elapsed'] = format_time(time_elapsed)
                         job.time_elapsed = format_time(time_elapsed)
+                        
+                        # Calculate ETA and time remaining if we have FPS
+                        if encoding_details['current_fps'] > 0:
+                            frames_remaining = total_frames - current_frame
+                            seconds_remaining = frames_remaining / encoding_details['current_fps']
+                            
+                            encoding_details['eta'] = format_time(seconds_remaining)
+                            encoding_details['time_remaining'] = format_time(seconds_remaining)
+                            job.eta = format_time(seconds_remaining)
+                            job.time_remaining = format_time(seconds_remaining)
             
             # Alternative progress detection (for HandBrake versions without frame info)
             if "%" in line and "Encoding" in line:
@@ -228,6 +233,12 @@ def run_encode(job):
                 if percent_match:
                     progress_percent = float(percent_match.group(1))
                     job.progress = progress_percent
+                    
+                    # Calculate time elapsed
+                    if encoding_details['start_timestamp']:
+                        time_elapsed = (datetime.now() - encoding_details['start_timestamp']).total_seconds()
+                        encoding_details['time_elapsed'] = format_time(time_elapsed)
+                        job.time_elapsed = format_time(time_elapsed)
             
             status_message = f"Encoding {job.filename}: {progress_percent:.1f}%"
             
@@ -238,8 +249,12 @@ def run_encode(job):
         current_process.wait()
         
         if current_process.returncode == 0:
+            # Move from temp to final output
+            if os.path.exists(job.temp_output_path):
+                shutil.move(job.temp_output_path, final_output_path)
+            
             job.status = "completed"
-            job.output_size = get_file_size(output_path)
+            job.output_size = get_file_size(final_output_path)
             job.current_output_size = job.output_size
             job.progress = 100
             progress_percent = 100
@@ -252,7 +267,8 @@ def run_encode(job):
             })
             
             # Calculate total time
-            total_time = (datetime.now() - encoding_details['start_timestamp']).total_seconds()
+            if encoding_details['start_timestamp']:
+                total_time = (datetime.now() - encoding_details['start_timestamp']).total_seconds()
             
             encoding_history.append({
                 'filename': job.filename,
@@ -261,7 +277,6 @@ def run_encode(job):
                 'input_size': job.input_size,
                 'output_size': job.output_size,
                 'average_fps': job.average_fps,
-                'bitrate': job.bitrate,
                 'start_time': job.start_time,
                 'end_time': datetime.now().isoformat(),
                 'duration': job.time_elapsed,
@@ -299,6 +314,14 @@ def run_encode(job):
         job.end_time = datetime.now().isoformat()
         current_process = None
         current_job = None
+        paused = False
+        
+        # Clean up temp file if it exists and job failed/cancelled
+        if job.status in ["failed", "cancelled"] and job.temp_output_path and os.path.exists(job.temp_output_path):
+            try:
+                os.remove(job.temp_output_path)
+            except:
+                pass
         
         # Start next job in queue (only if no job is running)
         process_queue()
@@ -317,6 +340,54 @@ def process_queue():
                 thread.start()
                 break
 
+def get_directory_structure(base_path, current_path=None, level=0):
+    """Recursively get directory structure"""
+    if current_path is None:
+        current_path = base_path
+    
+    items = []
+    
+    try:
+        for item in os.listdir(current_path):
+            item_path = os.path.join(current_path, item)
+            relative_path = os.path.relpath(item_path, base_path)
+            
+            if os.path.isdir(item_path):
+                # It's a directory
+                items.append({
+                    'name': item,
+                    'type': 'directory',
+                    'path': relative_path,
+                    'level': level,
+                    'children': get_directory_structure(base_path, item_path, level + 1),
+                    'size': 0,
+                    'size_display': '-',
+                    'modified': os.path.getmtime(item_path),
+                    'extension': 'folder',
+                    'expanded': False  # Add expanded state for UI
+                })
+            elif os.path.isfile(item_path):
+                # It's a file
+                extension = os.path.splitext(item)[1].lower().lstrip('.')
+                size = get_file_size(item_path)
+                
+                items.append({
+                    'name': item,
+                    'type': 'file',
+                    'path': relative_path,
+                    'level': level,
+                    'children': [],
+                    'size': size,
+                    'size_display': f"{size} MB",
+                    'modified': os.path.getmtime(item_path),
+                    'extension': extension if extension else 'unknown',
+                    'expanded': False
+                })
+    except Exception as e:
+        print(f"Error reading directory {current_path}: {e}")
+    
+    return items
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -324,22 +395,8 @@ def index():
 @app.get("/files")
 def list_files():
     try:
-        files = []
-        for f in os.listdir(MEDIA_DIR):
-            filepath = os.path.join(MEDIA_DIR, f)
-            if os.path.isfile(filepath):
-                size = get_file_size(filepath)
-                modified = os.path.getmtime(filepath)
-                extension = os.path.splitext(f)[1].lower().lstrip('.')
-                
-                files.append({
-                    'name': f,
-                    'size': size,
-                    'size_display': f"{size} MB",
-                    'modified': modified,
-                    'type': extension if extension else 'unknown'
-                })
-        return jsonify(files)
+        structure = get_directory_structure(MEDIA_DIR)
+        return jsonify(structure)
     except Exception as e:
         print(f"Error listing files: {e}")
         return jsonify([])
@@ -363,15 +420,15 @@ def get_queue():
             'format': job.output_format,
             'status': job.status,
             'progress': job.progress,
-            'input_size': job.input_size,  # Always include input size
+            'input_size': job.input_size,
             'output_size': job.output_size,
             'current_output_size': job.current_output_size if job.status == 'encoding' else job.output_size,
             'current_fps': job.current_fps,
             'average_fps': job.average_fps,
-            'bitrate': job.bitrate,
             'time_elapsed': job.time_elapsed,
             'time_remaining': job.time_remaining,
-            'eta': job.eta
+            'eta': job.eta,
+            'paused': paused and job.status == 'encoding'
         })
     
     current = None
@@ -388,17 +445,18 @@ def get_queue():
             'current_output_size': current_job.current_output_size,
             'current_fps': current_job.current_fps,
             'average_fps': current_job.average_fps,
-            'bitrate': current_job.bitrate,
             'time_elapsed': current_job.time_elapsed,
             'time_remaining': current_job.time_remaining,
-            'eta': current_job.eta
+            'eta': current_job.eta,
+            'paused': paused
         }
     
     return jsonify({
         'queue': queue_data,
         'current': current,
         'status': status_message,
-        'progress': progress_percent
+        'progress': progress_percent,
+        'paused': paused
     })
 
 @app.get("/encoding-details")
@@ -429,7 +487,6 @@ def get_encoding_details():
     return jsonify({
         'current_fps': encoding_details['current_fps'],
         'average_fps': encoding_details['average_fps'],
-        'bitrate': encoding_details['bitrate'],
         'eta': encoding_details['eta'],
         'time_elapsed': encoding_details['time_elapsed'],
         'time_remaining': encoding_details['time_remaining'],
@@ -441,7 +498,8 @@ def get_encoding_details():
         'output_size': current_output_size_display,
         'size_reduction': size_reduction,
         'preset': current_job.preset if current_job else "-",
-        'format': current_job.output_format if current_job else "-"
+        'format': current_job.output_format if current_job else "-",
+        'paused': paused
     })
 
 @app.get("/history")
@@ -456,11 +514,15 @@ def add_to_queue():
     
     # Check if file already in queue
     for job in encoding_queue:
-        if job.filename == data["file"] and job.status in ["queued", "encoding"]:
+        if job.filename == data["file"] and job.status in ["queued", "encoding", "paused"]:
             return jsonify({"error": "File already in queue"}), 400
     
-    # Get input file size before adding to queue
-    input_path = os.path.join(MEDIA_DIR, data["file"])
+    # Get full path for files in subdirectories
+    if data.get("path"):
+        input_path = os.path.join(MEDIA_DIR, data["path"])
+    else:
+        input_path = os.path.join(MEDIA_DIR, data["file"])
+    
     input_size = get_file_size(input_path) if os.path.exists(input_path) else 0
     
     job_id = int(time.time() * 1000)
@@ -468,15 +530,12 @@ def add_to_queue():
         job_id,
         data["file"],
         data["preset"],
-        data.get("format", "mp4")
+        data.get("format", "mp4"),
+        input_path if data.get("path") else None
     )
-    job.input_size = input_size  # Set input size immediately
+    job.input_size = input_size
     
     encoding_queue.append(job)
-    
-    # Start processing if nothing is running
-    if not current_job:
-        process_queue()
     
     return jsonify({"status": "added", "id": job_id, "input_size": input_size})
 
@@ -532,9 +591,40 @@ def move_in_queue():
     
     return jsonify({"status": "moved"})
 
+@app.post("/start")
+def start_encoding():
+    global current_job
+    
+    # Start processing if nothing is running
+    if not current_job:
+        process_queue()
+        return jsonify({"status": "started"})
+    
+    return jsonify({"status": "already_running"})
+
+@app.post("/pause")
+def pause_job():
+    global paused, current_job
+    paused = True
+    
+    if current_job and current_job.status == "encoding":
+        current_job.status = "paused"
+    
+    return jsonify({"status": "paused"})
+
+@app.post("/resume")
+def resume_job():
+    global paused, current_job
+    paused = False
+    
+    if current_job and current_job.status == "paused":
+        current_job.status = "encoding"
+    
+    return jsonify({"status": "resumed"})
+
 @app.post("/cancel")
 def cancel_job():
-    global current_process, current_job, status_message
+    global current_process, current_job, status_message, paused
     
     if current_process:
         try:
@@ -555,8 +645,16 @@ def cancel_job():
             'type': 'warning'
         })
         
+        # Clean up temp file
+        if current_job.temp_output_path and os.path.exists(current_job.temp_output_path):
+            try:
+                os.remove(current_job.temp_output_path)
+            except:
+                pass
+        
         current_job = None
     
+    paused = False
     status_message = "Cancelled"
     
     # Start next job in queue
@@ -585,15 +683,6 @@ def get_system_stats():
     ram = psutil.virtual_memory().percent
     disk = psutil.disk_usage('/').percent
     
-    # Network stats
-    net_io = psutil.net_io_counters()
-    network = {
-        'sent': f"{net_io.bytes_sent / (1024*1024):.1f} MB",
-        'recv': f"{net_io.bytes_recv / (1024*1024):.1f} MB",
-        'sent_mb': net_io.bytes_sent / (1024*1024),
-        'recv_mb': net_io.bytes_recv / (1024*1024)
-    }
-    
     # Process stats if encoding
     process_cpu = 0
     process_ram = 0
@@ -609,7 +698,6 @@ def get_system_stats():
         'cpu': cpu,
         'ram': ram,
         'disk': disk,
-        'network': network,
         'process_cpu': process_cpu,
         'process_ram': f"{process_ram:.1f} MB",
         'process_ram_mb': process_ram,
@@ -621,5 +709,6 @@ if __name__ == "__main__":
     os.makedirs(MEDIA_DIR, exist_ok=True)
     os.makedirs(PRESET_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(TEMP_DIR, exist_ok=True)
     
     app.run(host="0.0.0.0", port=5000, debug=False)
