@@ -23,6 +23,7 @@ const currentJobContent = document.getElementById('currentJobContent');
 const startBtn = document.getElementById('startBtn');
 const pauseBtn = document.getElementById('pauseBtn');
 const resumeBtn = document.getElementById('resumeBtn');
+const stopBtn = document.getElementById('stopBtn'); // NEW: Stop button
 const cancelBtn = document.getElementById('cancelBtn');
 const historyTableBody = document.getElementById('historyTableBody');
 const statusText = document.getElementById('statusText');
@@ -600,7 +601,7 @@ async function loadHistory() {
 // Start history polling
 function startHistoryPolling() {
     loadHistory();
-    historyInterval = setInterval(loadHistory, 3000); // Reload every 3 seconds
+    historyInterval = setInterval(loadHistory, 3000);
 }
 
 function updateHistoryDisplay() {
@@ -720,6 +721,8 @@ async function updateQueueDisplay() {
         if (data.current) {
             if (data.paused) {
                 updateStatusIndicator('paused');
+            } else if (data.stopped) {
+                updateStatusIndicator('stopped');
             } else {
                 updateStatusIndicator('encoding');
             }
@@ -773,6 +776,7 @@ async function updateQueueDisplay() {
             startBtn.disabled = true;
             pauseBtn.disabled = data.current.status !== 'encoding' || data.paused;
             resumeBtn.disabled = data.current.status !== 'paused' || !data.paused;
+            stopBtn.disabled = false; // Stop button always enabled when encoding
             cancelBtn.disabled = false;
             
         } else {
@@ -783,6 +787,7 @@ async function updateQueueDisplay() {
             startBtn.disabled = data.queue.length === 0;
             pauseBtn.disabled = true;
             resumeBtn.disabled = true;
+            stopBtn.disabled = true; // Disable stop button when no encoding
             cancelBtn.disabled = true;
         }
         
@@ -792,7 +797,7 @@ async function updateQueueDisplay() {
         if (data.queue.length === 0 && !data.current) {
             queueTableBody.innerHTML = `
                 <tr>
-                    <td colspan="7" class="empty-queue">
+                    <td colspan="6" class="empty-queue">
                         <i class="fas fa-inbox"></i>
                         <p>Queue is empty. Add files to get started.</p>
                     </td>
@@ -810,27 +815,20 @@ async function updateQueueDisplay() {
                 'paused': 'status-paused',
                 'completed': 'status-completed',
                 'failed': 'status-failed',
-                'cancelled': 'status-cancelled'
+                'cancelled': 'status-cancelled',
+                'stopped': 'status-stopped'
             }[job.status] || 'status-queued';
             
             const statusText = job.status.charAt(0).toUpperCase() + job.status.slice(1);
             
             row.className = job.status;
             
-            const outputSizeDisplay = job.status === 'encoding' || job.status === 'paused'
-                ? (job.current_output_size || job.output_size || '-')
-                : (job.output_size || '-');
-            
+            // REMOVED: Progress bar column entirely
             row.innerHTML = `
                 <td>${job.filename}</td>
                 <td>${job.preset}</td>
                 <td>${job.format.toUpperCase()}</td>
                 <td>${job.input_size || '0'} MB</td>
-                <td>
-                    <div class="progress-track">
-                        <div class="progress-lavender" style="width: ${job.progress}%"></div>
-                    </div>
-                </td>
                 <td><span class="status-badge ${statusClass}">${statusText}</span></td>
                 <td>
                     <div class="action-buttons">
@@ -958,6 +956,20 @@ async function cancelJob() {
     }
 }
 
+// NEW: Stop encoding
+async function stopEncoding() {
+    if (!confirm('Are you sure you want to stop encoding? This will immediately stop the current job and move to the next one.')) return;
+    
+    try {
+        await fetch('/stop', { method: 'POST' });
+        updateQueueDisplay();
+        showNotification('Encoding stopped', 'warning');
+    } catch (error) {
+        console.error('Error stopping encoding:', error);
+        showNotification('Failed to stop encoding', 'error');
+    }
+}
+
 // Encoding details polling
 function startEncodingDetailsPolling() {
     updateEncodingDetails();
@@ -1005,8 +1017,15 @@ async function updateEncodingDetails() {
         document.getElementById('timeRemaining').textContent = etaValue;
         
         // Update encoding status
-        encodingStatus.textContent = details.paused ? 'Paused' : 
-                                   details.input_file !== '-' ? 'Encoding' : 'Idle';
+        if (details.stopped) {
+            encodingStatus.textContent = 'Stopped';
+        } else if (details.paused) {
+            encodingStatus.textContent = 'Paused';
+        } else if (details.input_file !== '-') {
+            encodingStatus.textContent = 'Encoding';
+        } else {
+            encodingStatus.textContent = 'Idle';
+        }
         
         // Update encoding log
         const encodingLog = document.getElementById('encodingLog');
@@ -1214,6 +1233,9 @@ function updateStatusIndicator(status) {
         case 'paused':
             statusIndicator.classList.add('paused');
             break;
+        case 'stopped':
+            statusIndicator.classList.add('stopped');
+            break;
         case 'error':
             statusIndicator.classList.add('error');
             break;
@@ -1394,6 +1416,14 @@ function setupKeyboardShortcuts() {
         if (e.key === 'F5') {
             e.preventDefault();
             refreshFiles();
+        }
+        
+        // Ctrl/Cmd + S to stop encoding
+        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+            e.preventDefault();
+            if (!stopBtn.disabled) {
+                stopEncoding();
+            }
         }
     });
 }

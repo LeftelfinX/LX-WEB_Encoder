@@ -28,9 +28,12 @@
                 </div>
             </div>
             
+            <!-- FIXED: Stacked vertical status on both mobile and desktop -->
             <div class="global-status" id="globalStatus">
-                <div class="status-indicator idle"></div>
-                <span id="statusText">Ready</span>
+                <div class="status-row">
+                    <div class="status-indicator idle"></div>
+                    <span id="statusText">Ready</span>
+                </div>
                 <div class="global-progress">
                     <div class="progress-track">
                         <div class="progress-lavender" id="globalProgressFill"></div>
@@ -155,8 +158,12 @@
                         <button onclick="resumeJob()" class="btn btn-success" id="resumeBtn" disabled>
                             <i class="fas fa-play"></i> Resume
                         </button>
+                        <!-- ADDED: Stop Encoding Button -->
+                        <button onclick="stopEncoding()" class="btn btn-danger" id="stopBtn">
+                            <i class="fas fa-stop"></i> Stop
+                        </button>
                         <button onclick="cancelJob()" class="btn btn-danger" id="cancelBtn" disabled>
-                            <i class="fas fa-stop"></i> Cancel
+                            <i class="fas fa-times"></i> Cancel
                         </button>
                         <button onclick="clearQueue()" class="btn btn-secondary">
                             <i class="fas fa-trash"></i> Clear
@@ -200,7 +207,7 @@
                                         <th class="sortable" onclick="toggleQueueSort('input')">
                                             Input Size <span class="sort-indicator" id="queue-sort-input"></span>
                                         </th>
-                                        <th>Progress</th>
+                                        <!-- REMOVED: Progress column header -->
                                         <th class="sortable" onclick="toggleQueueSort('status')">
                                             Status <span class="sort-indicator" id="queue-sort-status"></span>
                                         </th>
@@ -209,7 +216,7 @@
                                 </thead>
                                 <tbody id="queueTableBody">
                                     <tr>
-                                        <td colspan="7" class="empty-queue">
+                                        <td colspan="6" class="empty-queue">
                                             <i class="fas fa-inbox"></i>
                                             <p>Queue is empty. Add files to get started.</p>
                                         </td>
@@ -401,6 +408,7 @@
                         <div class="mobile-stat-progress" id="mobileDiskBar"></div>
                     </div>
                 </div>
+                <!-- FIXED: Removed progress bar from process stats -->
                 <div class="mobile-stat">
                     <i class="fas fa-cogs"></i>
                     <div class="mobile-stat-info">

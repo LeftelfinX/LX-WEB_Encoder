@@ -140,16 +140,21 @@ h3 {
     -webkit-text-fill-color: var(--lavender);
 }
 
-/* Global Status */
+/* FIXED: Global Status - Stacked vertically on both mobile and desktop */
 .global-status {
     display: flex;
-    align-items: center;
+    flex-direction: column;
     gap: var(--spacing-md);
     padding: var(--spacing-md);
     background: var(--oled-gray);
     border-radius: var(--radius-md);
     border-left: 4px solid var(--lavender);
-    flex-wrap: wrap;
+}
+
+.status-row {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
 }
 
 .status-indicator {
@@ -181,17 +186,21 @@ h3 {
     animation: none;
 }
 
+.status-indicator.stopped {
+    background: var(--status-error);
+    animation: none;
+}
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
 }
 
 .global-progress {
-    flex: 1;
+    width: 100%;
     display: flex;
     align-items: center;
     gap: var(--spacing-md);
-    min-width: 200px;
 }
 
 /* Cards */
@@ -867,6 +876,11 @@ tr.cancelled {
     border-left: 3px solid var(--text-tertiary);
 }
 
+tr.stopped {
+    background: rgba(248, 113, 113, 0.1);
+    border-left: 3px solid var(--status-error);
+}
+
 .empty-queue, .empty-history {
     text-align: center;
     padding: var(--spacing-xl) !important;
@@ -923,6 +937,12 @@ tr.cancelled {
     background: rgba(128, 128, 128, 0.2);
     color: var(--text-tertiary);
     border: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+.status-stopped {
+    background: rgba(248, 113, 113, 0.3);
+    color: var(--status-error);
+    border: 1px solid rgba(248, 113, 113, 0.4);
 }
 
 /* Action Buttons */
@@ -1219,7 +1239,7 @@ tr.cancelled {
     transition: width 0.3s ease;
 }
 
-/* FIXED: Removed progress bar from process stats */
+/* FIXED: Removed progress bar from process stats - NO BAR AT ALL */
 .mobile-stat:nth-child(4) .mobile-stat-bar {
     display: none;
 }
@@ -1482,6 +1502,11 @@ tr.cancelled {
     .metric {
         min-width: 100%;
     }
+    
+    .global-status {
+        flex-direction: column;
+        gap: var(--spacing-sm);
+    }
 }
 
 @media (max-width: 768px) {
@@ -1589,6 +1614,23 @@ tr.cancelled {
     .desktop-stats {
         display: none;
     }
+    
+    /* FIXED: Global status stays stacked vertically */
+    .global-status {
+        flex-direction: column;
+        gap: var(--spacing-sm);
+    }
+    
+    .status-row {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: var(--spacing-sm);
+    }
+    
+    .global-progress {
+        width: 100%;
+    }
 }
 
 @media (max-width: 480px) {
@@ -1612,6 +1654,13 @@ tr.cancelled {
     .global-status {
         flex-direction: column;
         align-items: flex-start;
+        gap: var(--spacing-sm);
+    }
+    
+    .status-row {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
         gap: var(--spacing-sm);
     }
     

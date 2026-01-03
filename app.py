@@ -30,6 +30,7 @@ encoding_queue = []
 current_job = None
 current_process = None
 paused = False
+stopped = False
 progress_percent = 0
 status_message = "Idle"
 encoding_history = []
@@ -44,7 +45,7 @@ encoding_details = {
     'total_frames': 0,
     'start_timestamp': None,
     'fps_history': deque(maxlen=60),
-    'eta_from_output': '--:--',  # New: ETA extracted from HandBrake output
+    'eta_from_output': '--:--',
 }
 
 class EncodingJob:
@@ -130,7 +131,7 @@ def extract_eta_from_line(line):
     return None
 
 def run_encode(job):
-    global current_process, progress_percent, status_message, current_job, encoding_details, paused
+    global current_process, progress_percent, status_message, current_job, encoding_details, paused, stopped
     
     input_path = job.file_path if job.file_path else os.path.join(MEDIA_DIR, job.filename)
     
@@ -175,6 +176,7 @@ def run_encode(job):
     job.start_time = datetime.now().isoformat()
     progress_percent = 0
     status_message = f"Encoding: {job.filename}"
+    stopped = False
     
     # Clear temp file if exists
     if os.path.exists(job.temp_output_path):
@@ -195,7 +197,7 @@ def run_encode(job):
         
         # Start a thread to monitor output file size during encoding
         def monitor_output_size():
-            while current_process and current_process.poll() is None:
+            while current_process and current_process.poll() is None and not stopped:
                 try:
                     if os.path.exists(job.temp_output_path):
                         job.current_output_size = get_file_size(job.temp_output_path)
@@ -210,8 +212,12 @@ def run_encode(job):
         monitor_thread.start()
         
         for line in current_process.stdout:
+            # Check if stopped
+            if stopped:
+                break
+            
             # Check if paused
-            while paused and current_process and current_process.poll() is None:
+            while paused and current_process and current_process.poll() is None and not stopped:
                 time.sleep(0.5)
             
             # Add to log (limit to last 100 lines)
@@ -298,7 +304,47 @@ def run_encode(job):
             # Sleep a bit to prevent high CPU usage
             time.sleep(0.01)
         
-        # Wait for process to complete
+        # Check if stopped
+        if stopped:
+            # Process was stopped, clean up
+            if current_process:
+                try:
+                    current_process.terminate()
+                    current_process.wait(timeout=2)
+                except:
+                    try:
+                        current_process.kill()
+                    except:
+                        pass
+            
+            job.status = "stopped"
+            job.error = "Stopped by user"
+            job.end_time = datetime.now().isoformat()
+            
+            encoding_details['encoding_log'].append({
+                'timestamp': datetime.now().isoformat(),
+                'message': "⏹ Encoding stopped by user",
+                'type': 'warning'
+            })
+            
+            # Clean up temp file
+            if job.temp_output_path and os.path.exists(job.temp_output_path):
+                try:
+                    os.remove(job.temp_output_path)
+                except:
+                    pass
+            
+            status_message = f"Stopped: {job.filename}"
+            
+            # Reset current job
+            if current_job and current_job.id == job.id:
+                current_job = None
+            
+            # Start next job in queue
+            process_queue()
+            return
+        
+        # Wait for process to complete normally
         current_process.wait()
         
         if current_process.returncode == 0:
@@ -366,7 +412,9 @@ def run_encode(job):
         print(f"Encoding error: {e}")
     
     finally:
-        job.end_time = datetime.now().isoformat()
+        if not stopped:  # Only set end time if not stopped
+            job.end_time = datetime.now().isoformat()
+        
         current_process = None
         
         # Only clear current_job if this is actually the current job
@@ -374,9 +422,10 @@ def run_encode(job):
             current_job = None
         
         paused = False
+        stopped = False
         
-        # Clean up temp file if it exists and job failed/cancelled
-        if job.status in ["failed", "cancelled"] and job.temp_output_path and os.path.exists(job.temp_output_path):
+        # Clean up temp file if it exists and job failed/cancelled/stopped
+        if job.status in ["failed", "cancelled", "stopped"] and job.temp_output_path and os.path.exists(job.temp_output_path):
             try:
                 os.remove(job.temp_output_path)
             except:
@@ -423,7 +472,7 @@ def get_directory_structure(base_path, current_path=None, level=0):
                     'size_display': '-',
                     'modified': os.path.getmtime(item_path),
                     'extension': 'folder',
-                    'expanded': False  # Add expanded state for UI
+                    'expanded': False
                 })
             elif os.path.isfile(item_path):
                 # It's a file
@@ -515,7 +564,8 @@ def get_queue():
         'current': current,
         'status': status_message,
         'progress': progress_percent,
-        'paused': paused
+        'paused': paused,
+        'stopped': stopped
     })
 
 @app.get("/encoding-details")
@@ -559,12 +609,13 @@ def get_encoding_details():
         'size_reduction': size_reduction,
         'preset': current_job.preset if current_job else "-",
         'format': current_job.output_format if current_job else "-",
-        'paused': paused
+        'paused': paused,
+        'stopped': stopped
     })
 
 @app.get("/history")
 def get_history():
-    return jsonify(encoding_history[-20:])  # Last 20 jobs
+    return jsonify(encoding_history[-20:])
 
 @app.post("/queue/add")
 def add_to_queue():
@@ -684,7 +735,9 @@ def resume_job():
 
 @app.post("/cancel")
 def cancel_job():
-    global current_process, current_job, status_message, paused
+    global current_process, current_job, status_message, paused, stopped
+    
+    stopped = True
     
     if current_process:
         try:
@@ -728,6 +781,58 @@ def cancel_job():
     process_queue()
     
     return jsonify({"status": "cancelled"})
+
+@app.post("/stop")
+def stop_encoding():
+    global current_process, current_job, status_message, paused, stopped
+    
+    stopped = True
+    
+    if current_process:
+        try:
+            # Kill the process
+            current_process.terminate()
+            try:
+                current_process.wait(timeout=2)
+            except:
+                try:
+                    current_process.kill()
+                except:
+                    pass
+        except:
+            pass
+        current_process = None
+    
+    if current_job:
+        current_job.status = "stopped"
+        current_job.end_time = datetime.now().isoformat()
+        current_job.eta = "--:--"
+        current_job.time_remaining = "--:--"
+        
+        # Add stop message
+        encoding_details['encoding_log'].append({
+            'timestamp': datetime.now().isoformat(),
+            'message': "⏹ Encoding stopped by user",
+            'type': 'warning'
+        })
+        
+        # Clean up temp file
+        if current_job.temp_output_path and os.path.exists(current_job.temp_output_path):
+            try:
+                os.remove(current_job.temp_output_path)
+            except:
+                pass
+        
+        current_job = None
+    
+    paused = False
+    status_message = "Stopped"
+    progress_percent = 0
+    
+    # Start next job in queue
+    process_queue()
+    
+    return jsonify({"status": "stopped"})
 
 @app.post("/upload-preset")
 def upload_preset():
