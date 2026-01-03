@@ -150,6 +150,7 @@ h3 {
     background: var(--oled-gray);
     border-radius: var(--radius-md);
     border-left: 4px solid var(--lavender);
+    flex-wrap: wrap;
 }
 
 .status-indicator {
@@ -158,6 +159,7 @@ h3 {
     border-radius: 50%;
     background: var(--lavender);
     animation: pulse 2s infinite;
+    flex-shrink: 0;
 }
 
 .status-indicator.encoding {
@@ -185,6 +187,7 @@ h3 {
     display: flex;
     align-items: center;
     gap: var(--spacing-md);
+    min-width: 200px;
 }
 
 /* Cards */
@@ -209,6 +212,8 @@ h3 {
     margin-bottom: var(--spacing-lg);
     padding-bottom: var(--spacing-md);
     border-bottom: 1px solid var(--oled-gray);
+    flex-wrap: wrap;
+    gap: var(--spacing-md);
 }
 
 .card-header h2 {
@@ -637,6 +642,7 @@ h3 {
     border-radius: var(--radius-md);
     padding: var(--spacing-lg);
     border: 1px solid var(--lavender-transparent);
+    margin-bottom: var(--spacing-md);
 }
 
 .current-job-header {
@@ -644,6 +650,8 @@ h3 {
     justify-content: space-between;
     align-items: center;
     margin-bottom: var(--spacing-md);
+    flex-wrap: wrap;
+    gap: var(--spacing-md);
 }
 
 .current-job-progress {
@@ -655,9 +663,10 @@ h3 {
 
 .current-job-content {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
     gap: var(--spacing-lg);
-    align-items: center;
+    align-items: start;
+    margin-top: var(--spacing-md);
 }
 
 .no-job {
@@ -666,12 +675,19 @@ h3 {
     grid-column: 1 / -1;
     text-align: center;
     padding: var(--spacing-xl);
+    font-size: 1rem;
 }
 
 .job-info {
     display: flex;
     flex-direction: column;
     gap: var(--spacing-xs);
+    padding: var(--spacing-md);
+    background: var(--oled-darker);
+    border-radius: var(--radius-sm);
+    border-left: 3px solid var(--lavender);
+    min-height: 80px;
+    justify-content: center;
 }
 
 .job-info-label {
@@ -679,12 +695,15 @@ h3 {
     color: var(--text-tertiary);
     text-transform: uppercase;
     letter-spacing: 0.05em;
+    margin-bottom: 4px;
 }
 
 .job-info-value {
     font-weight: 600;
     color: var(--text-primary);
     font-size: 1.1rem;
+    word-break: break-word;
+    line-height: 1.3;
 }
 
 /* Progress Bars */
@@ -1240,6 +1259,10 @@ tr.cancelled {
     .container {
         padding: var(--spacing-md);
     }
+    
+    .current-job-content {
+        grid-template-columns: repeat(2, 1fr);
+    }
 }
 
 @media (max-width: 1024px) {
@@ -1284,6 +1307,14 @@ tr.cancelled {
         font-size: 0.8rem;
         gap: 5px;
         min-width: 80px;
+    }
+    
+    .current-job-content {
+        grid-template-columns: 1fr;
+    }
+    
+    .job-info {
+        min-height: 70px;
     }
 }
 
@@ -1376,6 +1407,19 @@ tr.cancelled {
     .stat-row {
         grid-template-columns: repeat(2, 1fr);
     }
+    
+    .job-info {
+        min-height: 60px;
+        padding: var(--spacing-sm);
+    }
+    
+    .job-info-label {
+        font-size: 0.8rem;
+    }
+    
+    .job-info-value {
+        font-size: 1rem;
+    }
 }
 
 @media (max-width: 480px) {
@@ -1403,5 +1447,19 @@ tr.cancelled {
     
     .card {
         padding: var(--spacing-md);
+    }
+    
+    .global-status {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: var(--spacing-sm);
+    }
+    
+    .global-progress {
+        min-width: 100%;
+    }
+    
+    .current-job-content {
+        grid-template-columns: 1fr;
     }
 }

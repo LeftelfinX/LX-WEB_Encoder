@@ -64,6 +64,7 @@ class EncodingJob:
         self.time_elapsed = '00:00'
         self.time_remaining = '--:--'
         self.eta = '--:--'
+        self.current_output_size = 0  # Track current size during encoding
 
 def get_file_size(path):
     """Get file size in MB"""
@@ -124,6 +125,13 @@ def run_encode(job):
     progress_percent = 0
     status_message = f"Encoding: {job.filename}"
     
+    # Clear output file if exists
+    if os.path.exists(output_path):
+        try:
+            os.remove(output_path)
+        except:
+            pass
+    
     try:
         current_process = subprocess.Popen(
             cmd,
@@ -133,6 +141,22 @@ def run_encode(job):
             bufsize=1,
             universal_newlines=True
         )
+        
+        # Start a thread to monitor output file size during encoding
+        def monitor_output_size():
+            while current_process and current_process.poll() is None:
+                try:
+                    if os.path.exists(output_path):
+                        job.current_output_size = get_file_size(output_path)
+                    else:
+                        job.current_output_size = 0
+                except:
+                    job.current_output_size = 0
+                time.sleep(1)
+        
+        monitor_thread = threading.Thread(target=monitor_output_size)
+        monitor_thread.daemon = True
+        monitor_thread.start()
         
         for line in current_process.stdout:
             # Add to log (limit to last 100 lines)
@@ -216,6 +240,7 @@ def run_encode(job):
         if current_process.returncode == 0:
             job.status = "completed"
             job.output_size = get_file_size(output_path)
+            job.current_output_size = job.output_size
             job.progress = 100
             progress_percent = 100
             
@@ -338,8 +363,9 @@ def get_queue():
             'format': job.output_format,
             'status': job.status,
             'progress': job.progress,
-            'input_size': job.input_size,
+            'input_size': job.input_size,  # Always include input size
             'output_size': job.output_size,
+            'current_output_size': job.current_output_size if job.status == 'encoding' else job.output_size,
             'current_fps': job.current_fps,
             'average_fps': job.average_fps,
             'bitrate': job.bitrate,
@@ -359,6 +385,7 @@ def get_queue():
             'progress': current_job.progress,
             'input_size': current_job.input_size,
             'output_size': current_job.output_size,
+            'current_output_size': current_job.current_output_size,
             'current_fps': current_job.current_fps,
             'average_fps': current_job.average_fps,
             'bitrate': current_job.bitrate,
@@ -380,11 +407,24 @@ def get_encoding_details():
     
     # Calculate size reduction if we have current job
     size_reduction = "-"
-    if current_job and current_job.input_size and current_job.output_size:
-        reduction = ((current_job.input_size - current_job.output_size) / current_job.input_size * 100)
-        size_reduction = f"{reduction:.1f}%"
-    elif current_job and current_job.input_size:
-        size_reduction = "0%"
+    current_output_size_display = "-"
+    
+    if current_job:
+        # Show current output size during encoding
+        if current_job.status == 'encoding' and current_job.current_output_size > 0:
+            current_output_size_display = f"{current_job.current_output_size} MB"
+        elif current_job.output_size > 0:
+            current_output_size_display = f"{current_job.output_size} MB"
+        
+        # Calculate reduction percentage
+        if current_job.input_size and current_job.current_output_size:
+            reduction = ((current_job.input_size - current_job.current_output_size) / current_job.input_size * 100)
+            size_reduction = f"{reduction:.1f}%"
+        elif current_job.input_size and current_job.output_size:
+            reduction = ((current_job.input_size - current_job.output_size) / current_job.input_size * 100)
+            size_reduction = f"{reduction:.1f}%"
+        elif current_job.input_size:
+            size_reduction = "0%"
     
     return jsonify({
         'current_fps': encoding_details['current_fps'],
@@ -398,7 +438,7 @@ def get_encoding_details():
         'total_frames': encoding_details['total_frames'],
         'input_file': current_job.filename if current_job else "-",
         'input_size': f"{current_job.input_size} MB" if current_job and current_job.input_size else "-",
-        'output_size': f"{current_job.output_size} MB" if current_job and current_job.output_size else "-",
+        'output_size': current_output_size_display,
         'size_reduction': size_reduction,
         'preset': current_job.preset if current_job else "-",
         'format': current_job.output_format if current_job else "-"
@@ -416,8 +456,12 @@ def add_to_queue():
     
     # Check if file already in queue
     for job in encoding_queue:
-        if job.filename == data["file"] and job.status != "completed" and job.status != "failed":
+        if job.filename == data["file"] and job.status in ["queued", "encoding"]:
             return jsonify({"error": "File already in queue"}), 400
+    
+    # Get input file size before adding to queue
+    input_path = os.path.join(MEDIA_DIR, data["file"])
+    input_size = get_file_size(input_path) if os.path.exists(input_path) else 0
     
     job_id = int(time.time() * 1000)
     job = EncodingJob(
@@ -426,6 +470,7 @@ def add_to_queue():
         data["preset"],
         data.get("format", "mp4")
     )
+    job.input_size = input_size  # Set input size immediately
     
     encoding_queue.append(job)
     
@@ -433,7 +478,7 @@ def add_to_queue():
     if not current_job:
         process_queue()
     
-    return jsonify({"status": "added", "id": job_id})
+    return jsonify({"status": "added", "id": job_id, "input_size": input_size})
 
 @app.post("/queue/remove")
 def remove_from_queue():

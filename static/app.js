@@ -6,7 +6,7 @@ let encodingDetailsInterval = null;
 let filesData = [];
 let queueData = [];
 let historyData = [];
-let currentSort = { field: 'name', direction: 'asc' };
+let currentSort = { field: 'name-asc', direction: 'asc' };
 let queueSort = { field: 'filename', direction: 'asc' };
 let historySort = { field: 'date', direction: 'desc' };
 let isFloatingBarCollapsed = false;
@@ -51,6 +51,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Setup keyboard shortcuts
     setupKeyboardShortcuts();
+    
+    // Initialize sort dropdown
+    const sortSelect = document.getElementById('sortSelect');
+    sortSelect.value = currentSort.field;
 });
 
 // File handling functions
@@ -189,9 +193,7 @@ function formatDate(timestamp) {
         return date.toLocaleDateString([], { 
             year: 'numeric', 
             month: 'short', 
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
+            day: 'numeric'
         });
     } catch (e) {
         return 'N/A';
@@ -550,27 +552,30 @@ async function addToQueue() {
     
     try {
         const files = Array.from(selectedFiles);
-        const promises = files.map(filename => 
-            fetch('/queue/add', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ file: filename, preset, format })
-            })
-        );
-        
-        const results = await Promise.allSettled(promises);
-        
         let successCount = 0;
         let errorCount = 0;
         
-        results.forEach((result, index) => {
-            if (result.status === 'fulfilled' && result.value.ok) {
-                successCount++;
-            } else {
+        for (const filename of files) {
+            try {
+                const response = await fetch('/queue/add', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ file: filename, preset, format })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    successCount++;
+                } else {
+                    errorCount++;
+                    console.error(`Failed to add ${filename}:`, data.error);
+                }
+            } catch (error) {
                 errorCount++;
-                console.error(`Failed to add ${files[index]}:`, result.reason);
+                console.error(`Error adding ${filename}:`, error);
             }
-        });
+        }
         
         if (successCount > 0) {
             showNotification(`Added ${successCount} file${successCount !== 1 ? 's' : ''} to queue`, 'success');
@@ -617,14 +622,19 @@ async function updateQueueDisplay() {
             document.getElementById('currentJobProgress').style.width = `${data.current.progress}%`;
             document.getElementById('currentJobPercent').textContent = `${Math.round(data.current.progress)}%`;
             
-            const reduction = data.current.input_size && data.current.output_size 
-                ? `${((data.current.input_size - data.current.output_size) / data.current.input_size * 100).toFixed(1)}%`
+            // Get current output size (use current_output_size if encoding, otherwise output_size)
+            const currentOutputSize = data.current.status === 'encoding' 
+                ? (data.current.current_output_size || data.current.output_size)
+                : data.current.output_size;
+            
+            const reduction = data.current.input_size && currentOutputSize 
+                ? `${((data.current.input_size - currentOutputSize) / data.current.input_size * 100).toFixed(1)}%`
                 : '-';
             
             currentJobContent.innerHTML = `
                 <div class="job-info">
                     <div class="job-info-label">File</div>
-                    <div class="job-info-value">${data.current.filename}</div>
+                    <div class="job-info-value" style="word-break: break-word;">${data.current.filename}</div>
                 </div>
                 <div class="job-info">
                     <div class="job-info-label">Preset</div>
@@ -640,7 +650,7 @@ async function updateQueueDisplay() {
                 </div>
                 <div class="job-info">
                     <div class="job-info-label">Output Size</div>
-                    <div class="job-info-value">${data.current.output_size || '0'} MB</div>
+                    <div class="job-info-value">${currentOutputSize || '0'} MB</div>
                 </div>
                 <div class="job-info">
                     <div class="job-info-label">Reduction</div>
@@ -654,7 +664,7 @@ async function updateQueueDisplay() {
         } else {
             document.getElementById('currentJobProgress').style.width = '0%';
             document.getElementById('currentJobPercent').textContent = '0%';
-            currentJobContent.innerHTML = `<p class="no-job">No active encoding job</p>`;
+            currentJobContent.innerHTML = `<div class="no-job">No active encoding job</div>`;
             startBtn.disabled = data.queue.length === 0;
             cancelBtn.disabled = true;
         }
@@ -689,11 +699,16 @@ async function updateQueueDisplay() {
             
             const statusText = job.status.charAt(0).toUpperCase() + job.status.slice(1);
             
+            // Show current output size for encoding jobs, final output size for completed
+            const outputSizeDisplay = job.status === 'encoding' 
+                ? (job.current_output_size || job.output_size || '-')
+                : (job.output_size || '-');
+            
             row.innerHTML = `
                 <td>${job.filename}</td>
                 <td>${job.preset}</td>
                 <td>${job.format.toUpperCase()}</td>
-                <td>${job.input_size || '-'} MB</td>
+                <td>${job.input_size || '0'} MB</td>
                 <td>
                     <div class="progress-track">
                         <div class="progress-lavender" style="width: ${job.progress}%"></div>
