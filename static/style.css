@@ -1219,6 +1219,11 @@ tr.cancelled {
     transition: width 0.3s ease;
 }
 
+/* FIXED: Removed progress bar from process stats */
+.mobile-stat:nth-child(4) .mobile-stat-bar {
+    display: none;
+}
+
 .mobile-stat-time {
     display: flex;
     align-items: center;

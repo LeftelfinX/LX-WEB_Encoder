@@ -771,8 +771,8 @@ async function updateQueueDisplay() {
             
             // Update control buttons
             startBtn.disabled = true;
-            pauseBtn.disabled = data.current.status !== 'encoding';
-            resumeBtn.disabled = data.current.status !== 'paused';
+            pauseBtn.disabled = data.current.status !== 'encoding' || data.paused;
+            resumeBtn.disabled = data.current.status !== 'paused' || !data.paused;
             cancelBtn.disabled = false;
             
         } else {
@@ -985,10 +985,16 @@ async function updateEncodingDetails() {
             else if (details.average_fps > 0 && details.average_fps < 15) avgFpsElement.classList.add('fps-low');
         }
         
-        // Update values
+        // Update values - Use ETA from HandBrake output
         currentFpsElement.textContent = details.current_fps.toFixed(1);
         avgFpsElement.textContent = details.average_fps.toFixed(1);
-        document.getElementById('eta').textContent = details.eta;
+        
+        // Use ETA from HandBrake output if available
+        const etaValue = details.eta_from_output && details.eta_from_output !== '--:--' 
+            ? details.eta_from_output 
+            : details.eta;
+        
+        document.getElementById('eta').textContent = etaValue;
         document.getElementById('inputFile').textContent = details.input_file;
         document.getElementById('inputSize').textContent = details.input_size;
         document.getElementById('outputSize').textContent = details.output_size;
@@ -996,7 +1002,7 @@ async function updateEncodingDetails() {
         document.getElementById('encodingPreset').textContent = details.preset;
         document.getElementById('encodingFormat').textContent = details.format;
         document.getElementById('timeElapsed').textContent = details.time_elapsed;
-        document.getElementById('timeRemaining').textContent = details.time_remaining;
+        document.getElementById('timeRemaining').textContent = etaValue;
         
         // Update encoding status
         encodingStatus.textContent = details.paused ? 'Paused' : 

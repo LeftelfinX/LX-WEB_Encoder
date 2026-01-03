@@ -44,6 +44,7 @@ encoding_details = {
     'total_frames': 0,
     'start_timestamp': None,
     'fps_history': deque(maxlen=60),
+    'eta_from_output': '--:--',  # New: ETA extracted from HandBrake output
 }
 
 class EncodingJob:
@@ -78,13 +79,55 @@ def format_time(seconds):
     """Convert seconds to MM:SS or HH:MM:SS format"""
     if seconds is None or seconds < 0:
         return "--:--"
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    seconds = int(seconds % 60)
     
-    if hours > 0:
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-    return f"{minutes:02d}:{seconds:02d}"
+    try:
+        seconds = int(seconds)
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+    except (ValueError, TypeError):
+        return "--:--"
+
+def extract_eta_from_line(line):
+    """Extract ETA from HandBrake output line"""
+    # Pattern for ETA: "ETA 00h01m23s" or "ETA 01:23:45"
+    patterns = [
+        r'eta\s+(\d{1,2})h(\d{1,2})m(\d{1,2})s',  # ETA 01h23m45s
+        r'eta\s+(\d{1,2}):(\d{1,2}):(\d{1,2})',   # ETA 01:23:45
+        r'eta\s+(\d{1,2}):(\d{1,2})',             # ETA 01:23
+    ]
+    
+    line_lower = line.lower()
+    
+    for pattern in patterns:
+        match = re.search(pattern, line_lower)
+        if match:
+            groups = match.groups()
+            if len(groups) == 3:
+                # Format: hh:mm:ss or hh mm ss
+                try:
+                    hours = int(groups[0])
+                    minutes = int(groups[1])
+                    seconds = int(groups[2])
+                    total_seconds = hours * 3600 + minutes * 60 + seconds
+                    return format_time(total_seconds)
+                except ValueError:
+                    pass
+            elif len(groups) == 2:
+                # Format: mm:ss
+                try:
+                    minutes = int(groups[0])
+                    seconds = int(groups[1])
+                    total_seconds = minutes * 60 + seconds
+                    return format_time(total_seconds)
+                except ValueError:
+                    pass
+    
+    return None
 
 def run_encode(job):
     global current_process, progress_percent, status_message, current_job, encoding_details, paused
@@ -109,6 +152,7 @@ def run_encode(job):
         'current_fps': 0.0,
         'average_fps': 0.0,
         'eta': '--:--',
+        'eta_from_output': '--:--',
         'time_elapsed': '00:00',
         'time_remaining': '00:00',
         'encoding_log': [],
@@ -179,6 +223,15 @@ def run_encode(job):
             if len(encoding_details['encoding_log']) > 100:
                 encoding_details['encoding_log'] = encoding_details['encoding_log'][-100:]
             
+            # Extract ETA from HandBrake output
+            eta_from_output = extract_eta_from_line(line)
+            if eta_from_output:
+                encoding_details['eta_from_output'] = eta_from_output
+                job.eta = eta_from_output
+                encoding_details['eta'] = eta_from_output
+                encoding_details['time_remaining'] = eta_from_output
+                job.time_remaining = eta_from_output
+            
             # Extract FPS
             fps_match = re.search(r'(\d+\.\d+|\d+)\s*fps', line.lower())
             if fps_match:
@@ -217,8 +270,8 @@ def run_encode(job):
                         encoding_details['time_elapsed'] = format_time(time_elapsed)
                         job.time_elapsed = format_time(time_elapsed)
                         
-                        # Calculate ETA and time remaining if we have FPS
-                        if encoding_details['current_fps'] > 0:
+                        # Only calculate ETA if not already extracted from HandBrake
+                        if encoding_details['eta'] == '--:--' and encoding_details['current_fps'] > 0:
                             frames_remaining = total_frames - current_frame
                             seconds_remaining = frames_remaining / encoding_details['current_fps']
                             
@@ -228,7 +281,7 @@ def run_encode(job):
                             job.time_remaining = format_time(seconds_remaining)
             
             # Alternative progress detection (for HandBrake versions without frame info)
-            if "%" in line and "Encoding" in line:
+            if "%" in line and "encoding" in line.lower():
                 percent_match = re.search(r'(\d+\.\d+|\d+)\s*%', line)
                 if percent_match:
                     progress_percent = float(percent_match.group(1))
@@ -258,6 +311,8 @@ def run_encode(job):
             job.current_output_size = job.output_size
             job.progress = 100
             progress_percent = 100
+            job.eta = "00:00"
+            job.time_remaining = "00:00"
             
             # Add completion message
             encoding_details['encoding_log'].append({
@@ -313,7 +368,11 @@ def run_encode(job):
     finally:
         job.end_time = datetime.now().isoformat()
         current_process = None
-        current_job = None
+        
+        # Only clear current_job if this is actually the current job
+        if current_job and current_job.id == job.id:
+            current_job = None
+        
         paused = False
         
         # Clean up temp file if it exists and job failed/cancelled
@@ -487,9 +546,10 @@ def get_encoding_details():
     return jsonify({
         'current_fps': encoding_details['current_fps'],
         'average_fps': encoding_details['average_fps'],
-        'eta': encoding_details['eta'],
+        'eta': encoding_details['eta_from_output'] if encoding_details['eta_from_output'] != '--:--' else encoding_details['eta'],
+        'eta_from_output': encoding_details['eta_from_output'],
         'time_elapsed': encoding_details['time_elapsed'],
-        'time_remaining': encoding_details['time_remaining'],
+        'time_remaining': encoding_details['eta_from_output'] if encoding_details['eta_from_output'] != '--:--' else encoding_details['time_remaining'],
         'encoding_log': encoding_details['encoding_log'][-20:],  # Last 20 entries
         'frames_processed': encoding_details['frames_processed'],
         'total_frames': encoding_details['total_frames'],
@@ -628,15 +688,21 @@ def cancel_job():
     
     if current_process:
         try:
+            # Kill the process
             current_process.terminate()
-            current_process.wait(timeout=5)
+            try:
+                current_process.wait(timeout=5)
+            except:
+                current_process.kill()
         except:
-            current_process.kill()
+            pass
         current_process = None
     
     if current_job:
         current_job.status = "cancelled"
         current_job.end_time = datetime.now().isoformat()
+        current_job.eta = "--:--"
+        current_job.time_remaining = "--:--"
         
         # Add cancellation message
         encoding_details['encoding_log'].append({
@@ -656,6 +722,7 @@ def cancel_job():
     
     paused = False
     status_message = "Cancelled"
+    progress_percent = 0
     
     # Start next job in queue
     process_queue()
