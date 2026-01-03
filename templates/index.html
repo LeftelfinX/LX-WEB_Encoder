@@ -47,6 +47,18 @@
                 <div class="card-header">
                     <h2><i class="fas fa-file-video"></i> Media Files</h2>
                     <div class="file-controls">
+                        <div class="sort-controls">
+                            <select id="sortSelect" class="form-select sort-select" onchange="sortFiles()">
+                                <option value="name-asc">Name (A-Z)</option>
+                                <option value="name-desc">Name (Z-A)</option>
+                                <option value="size-asc">Size (Smallest)</option>
+                                <option value="size-desc">Size (Largest)</option>
+                                <option value="date-asc">Date (Oldest)</option>
+                                <option value="date-desc">Date (Newest)</option>
+                                <option value="type-asc">Type (A-Z)</option>
+                                <option value="type-desc">Type (Z-A)</option>
+                            </select>
+                        </div>
                         <button onclick="selectAllFiles()" class="btn btn-secondary">
                             <i class="fas fa-check-square"></i> All
                         </button>
@@ -64,10 +76,18 @@
                         <div class="list-checkbox">
                             <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)">
                         </div>
-                        <div class="list-column filename-column">Filename</div>
-                        <div class="list-column size-column">Size</div>
-                        <div class="list-column type-column">Type</div>
-                        <div class="list-column date-column">Modified</div>
+                        <div class="list-column filename-column sortable" onclick="toggleSort('name')">
+                            Filename <span class="sort-indicator" id="sort-name"></span>
+                        </div>
+                        <div class="list-column size-column sortable" onclick="toggleSort('size')">
+                            Size <span class="sort-indicator" id="sort-size"></span>
+                        </div>
+                        <div class="list-column type-column sortable" onclick="toggleSort('type')">
+                            Type <span class="sort-indicator" id="sort-type"></span>
+                        </div>
+                        <div class="list-column date-column sortable" onclick="toggleSort('date')">
+                            Modified <span class="sort-indicator" id="sort-date"></span>
+                        </div>
                         <div class="list-column actions-column">Actions</div>
                     </div>
                     
@@ -162,12 +182,22 @@
                             <table id="queueTable">
                                 <thead>
                                     <tr>
-                                        <th>File</th>
-                                        <th>Preset</th>
-                                        <th>Format</th>
-                                        <th>Input Size</th>
+                                        <th class="sortable" onclick="toggleQueueSort('filename')">
+                                            File <span class="sort-indicator" id="queue-sort-filename"></span>
+                                        </th>
+                                        <th class="sortable" onclick="toggleQueueSort('preset')">
+                                            Preset <span class="sort-indicator" id="queue-sort-preset"></span>
+                                        </th>
+                                        <th class="sortable" onclick="toggleQueueSort('format')">
+                                            Format <span class="sort-indicator" id="queue-sort-format"></span>
+                                        </th>
+                                        <th class="sortable" onclick="toggleQueueSort('input')">
+                                            Input Size <span class="sort-indicator" id="queue-sort-input"></span>
+                                        </th>
                                         <th>Progress</th>
-                                        <th>Status</th>
+                                        <th class="sortable" onclick="toggleQueueSort('status')">
+                                            Status <span class="sort-indicator" id="queue-sort-status"></span>
+                                        </th>
                                         <th>Actions</th>
                                     </tr>
                                 </thead>
@@ -185,26 +215,130 @@
                 </div>
             </section>
 
+            <!-- Encoding Details Panel -->
+            <section class="card encoding-details">
+                <div class="card-header">
+                    <h2><i class="fas fa-chart-line"></i> Live Encoding Details</h2>
+                    <div class="encoding-metrics">
+                        <div class="metric">
+                            <span class="metric-label">Current FPS:</span>
+                            <span class="metric-value" id="currentFps">0.0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Avg FPS:</span>
+                            <span class="metric-value" id="avgFps">0.0</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Bitrate:</span>
+                            <span class="metric-value" id="bitrate">0 kbps</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">ETA:</span>
+                            <span class="metric-value" id="eta">--:--</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="encoding-stats">
+                    <div class="stat-row">
+                        <div class="stat-item">
+                            <div class="stat-label">Input File</div>
+                            <div class="stat-value" id="inputFile">-</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Input Size</div>
+                            <div class="stat-value" id="inputSize">-</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Output Size</div>
+                            <div class="stat-value" id="outputSize">-</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Size Reduction</div>
+                            <div class="stat-value" id="sizeReduction">-</div>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-row">
+                        <div class="stat-item">
+                            <div class="stat-label">Preset</div>
+                            <div class="stat-value" id="encodingPreset">-</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Format</div>
+                            <div class="stat-value" id="encodingFormat">-</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Time Elapsed</div>
+                            <div class="stat-value" id="timeElapsed">00:00</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Time Remaining</div>
+                            <div class="stat-value" id="timeRemaining">00:00</div>
+                        </div>
+                    </div>
+                    
+                    <div class="encoding-log">
+                        <div class="log-header">
+                            <h4><i class="fas fa-terminal"></i> Live Encoding Output</h4>
+                            <button onclick="clearEncodingLog()" class="btn btn-sm btn-secondary">
+                                <i class="fas fa-trash"></i> Clear
+                            </button>
+                        </div>
+                        <div class="log-content" id="encodingLog">
+                            <div class="log-entry">Waiting for encoding to start...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- History -->
             <section class="card">
                 <div class="card-header">
                     <h2><i class="fas fa-history"></i> Recent Encodes</h2>
+                    <div class="sort-controls">
+                        <select id="historySortSelect" class="form-select sort-select" onchange="sortHistory()">
+                            <option value="date-desc">Newest First</option>
+                            <option value="date-asc">Oldest First</option>
+                            <option value="size-desc">Largest Size</option>
+                            <option value="size-asc">Smallest Size</option>
+                            <option value="reduction-desc">Best Reduction</option>
+                            <option value="reduction-asc">Worst Reduction</option>
+                            <option value="fps-desc">Highest FPS</option>
+                            <option value="fps-asc">Lowest FPS</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="table-container">
                     <table id="historyTable">
                         <thead>
                             <tr>
-                                <th>File</th>
-                                <th>Preset</th>
-                                <th>Input Size</th>
-                                <th>Output Size</th>
-                                <th>Reduction</th>
-                                <th>Time</th>
+                                <th class="sortable" onclick="toggleHistorySort('filename')">
+                                    File <span class="sort-indicator" id="history-sort-filename"></span>
+                                </th>
+                                <th class="sortable" onclick="toggleHistorySort('preset')">
+                                    Preset <span class="sort-indicator" id="history-sort-preset"></span>
+                                </th>
+                                <th class="sortable" onclick="toggleHistorySort('input')">
+                                    Input Size <span class="sort-indicator" id="history-sort-input"></span>
+                                </th>
+                                <th class="sortable" onclick="toggleHistorySort('output')">
+                                    Output Size <span class="sort-indicator" id="history-sort-output"></span>
+                                </th>
+                                <th class="sortable" onclick="toggleHistorySort('reduction')">
+                                    Reduction <span class="sort-indicator" id="history-sort-reduction"></span>
+                                </th>
+                                <th class="sortable" onclick="toggleHistorySort('fps')">
+                                    FPS <span class="sort-indicator" id="history-sort-fps"></span>
+                                </th>
+                                <th class="sortable" onclick="toggleHistorySort('time')">
+                                    Time <span class="sort-indicator" id="history-sort-time"></span>
+                                </th>
                             </tr>
                         </thead>
                         <tbody id="historyTableBody">
                             <tr>
-                                <td colspan="6" class="empty-history">
+                                <td colspan="7" class="empty-history">
                                     <i class="fas fa-clock"></i>
                                     <p>No encoding history yet</p>
                                 </td>
@@ -214,71 +348,44 @@
                 </div>
             </section>
         </main>
+    </div>
 
-        <!-- System Status Bar -->
-        <footer class="status-bar">
-            <div class="status-grid">
-                <div class="status-item">
-                    <div class="status-icon">
-                        <i class="fas fa-microchip"></i>
-                    </div>
-                    <div class="status-info">
-                        <div class="status-label">CPU</div>
-                        <div class="status-value" id="cpuValue">0%</div>
-                    </div>
-                </div>
-                
-                <div class="status-item">
-                    <div class="status-icon">
-                        <i class="fas fa-memory"></i>
-                    </div>
-                    <div class="status-info">
-                        <div class="status-label">RAM</div>
-                        <div class="status-value" id="ramValue">0%</div>
-                    </div>
-                </div>
-                
-                <div class="status-item">
-                    <div class="status-icon">
-                        <i class="fas fa-hard-drive"></i>
-                    </div>
-                    <div class="status-info">
-                        <div class="status-label">Disk</div>
-                        <div class="status-value" id="diskValue">0%</div>
-                    </div>
-                </div>
-                
-                <div class="status-item">
-                    <div class="status-icon">
-                        <i class="fas fa-network-wired"></i>
-                    </div>
-                    <div class="status-info">
-                        <div class="status-label">Network</div>
-                        <div class="status-value" id="netValue">0/0 MB</div>
-                    </div>
-                </div>
-                
-                <div class="status-item">
-                    <div class="status-icon">
-                        <i class="fas fa-cogs"></i>
-                    </div>
-                    <div class="status-info">
-                        <div class="status-label">Process</div>
-                        <div class="status-value" id="processValue">0% / 0 MB</div>
-                    </div>
-                </div>
-                
-                <div class="status-item">
-                    <div class="status-icon">
-                        <i class="fas fa-clock"></i>
-                    </div>
-                    <div class="status-info">
-                        <div class="status-label">Time</div>
-                        <div class="status-value" id="timeValue">00:00:00</div>
-                    </div>
-                </div>
+    <!-- Floating System Status Bar -->
+    <div class="floating-status-bar" id="floatingStatusBar">
+        <div class="floating-stats">
+            <div class="floating-stat">
+                <i class="fas fa-microchip"></i>
+                <span class="floating-label">CPU:</span>
+                <span class="floating-value" id="floatingCpu">0%</span>
             </div>
-        </footer>
+            <div class="floating-stat">
+                <i class="fas fa-memory"></i>
+                <span class="floating-label">RAM:</span>
+                <span class="floating-value" id="floatingRam">0%</span>
+            </div>
+            <div class="floating-stat">
+                <i class="fas fa-hard-drive"></i>
+                <span class="floating-label">Disk:</span>
+                <span class="floating-value" id="floatingDisk">0%</span>
+            </div>
+            <div class="floating-stat">
+                <i class="fas fa-network-wired"></i>
+                <span class="floating-label">NET:</span>
+                <span class="floating-value" id="floatingNet">0/0</span>
+            </div>
+            <div class="floating-stat">
+                <i class="fas fa-cogs"></i>
+                <span class="floating-label">Process:</span>
+                <span class="floating-value" id="floatingProcess">0% 0MB</span>
+            </div>
+            <div class="floating-stat">
+                <i class="fas fa-clock"></i>
+                <span class="floating-value" id="floatingTime">00:00:00</span>
+            </div>
+        </div>
+        <button class="floating-toggle" onclick="toggleFloatingStatus()">
+            <i class="fas fa-chevron-down" id="floatingToggleIcon"></i>
+        </button>
     </div>
 
     <!-- Preview Modal -->

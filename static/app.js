@@ -2,6 +2,16 @@
 let selectedFiles = new Set();
 let pollInterval = null;
 let systemStatsInterval = null;
+let encodingDetailsInterval = null;
+let filesData = [];
+let queueData = [];
+let historyData = [];
+let currentSort = { field: 'name', direction: 'asc' };
+let queueSort = { field: 'filename', direction: 'asc' };
+let historySort = { field: 'date', direction: 'desc' };
+let isFloatingBarCollapsed = false;
+let isDragging = false;
+let dragOffset = { x: 0, y: 0 };
 
 // DOM Elements
 const filesList = document.getElementById('filesList');
@@ -18,6 +28,8 @@ const statusText = document.getElementById('statusText');
 const globalProgressFill = document.getElementById('globalProgressFill');
 const globalProgressText = document.getElementById('globalProgressText');
 const statusIndicator = document.querySelector('.status-indicator');
+const floatingStatusBar = document.getElementById('floatingStatusBar');
+const floatingToggleIcon = document.getElementById('floatingToggleIcon');
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -26,18 +38,22 @@ document.addEventListener('DOMContentLoaded', () => {
     loadHistory();
     startPolling();
     startSystemStatsPolling();
+    startEncodingDetailsPolling();
     
     // Handle preset upload
     presetUpload.addEventListener('change', handlePresetUpload);
     
-    // Add keyboard shortcuts
-    setupKeyboardShortcuts();
+    // Setup floating bar dragging
+    setupFloatingBarDrag();
     
-    // Update status indicator
-    updateStatusIndicator('idle');
+    // Load saved floating bar position
+    loadFloatingBarPosition();
+    
+    // Setup keyboard shortcuts
+    setupKeyboardShortcuts();
 });
 
-// Load media files
+// File handling functions
 async function loadFiles() {
     try {
         const loadingMessage = document.getElementById('loadingMessage');
@@ -46,82 +62,12 @@ async function loadFiles() {
         }
         
         const response = await fetch('/files');
-        const files = await response.json();
+        filesData = await response.json();
         
-        filesList.innerHTML = '';
+        // Sort files
+        sortFilesData();
         
-        if (files.length === 0) {
-            filesList.innerHTML = `
-                <div class="list-empty">
-                    <i class="fas fa-folder-open"></i>
-                    <p>No media files found</p>
-                    <p class="help-text">Place video files in the <code>media/</code> folder</p>
-                </div>
-            `;
-            updateCounts(0, 0);
-            return;
-        }
-        
-        files.forEach(file => {
-            const extension = getFileExtension(file.name);
-            const fileType = getFileType(extension);
-            const typeClass = `file-type-${extension.toLowerCase()}`;
-            const modifiedDate = file.modified ? formatDate(file.modified) : 'N/A';
-            
-            const fileRow = document.createElement('div');
-            fileRow.className = `file-row ${selectedFiles.has(file.name) ? 'selected' : ''}`;
-            fileRow.dataset.filename = file.name;
-            fileRow.tabIndex = 0;
-            
-            fileRow.innerHTML = `
-                <div class="file-checkbox-cell">
-                    <input type="checkbox" class="file-checkbox" 
-                           ${selectedFiles.has(file.name) ? 'checked' : ''}
-                           onchange="toggleFileSelection('${file.name}', this.checked)">
-                </div>
-                <div class="file-info-cell">
-                    <i class="fas ${getFileIcon(extension)} ${typeClass} file-icon"></i>
-                    <div class="file-details">
-                        <div class="file-name" title="${file.name}">${file.name}</div>
-                        <span class="file-extension">${extension.toUpperCase()}</span>
-                    </div>
-                </div>
-                <div class="file-size-cell">${file.size}</div>
-                <div class="file-type-cell">${fileType}</div>
-                <div class="file-date-cell">${modifiedDate}</div>
-                <div class="file-actions-cell">
-                    <button class="preview-btn" onclick="showFilePreview('${file.name}')">
-                        <i class="fas fa-eye"></i>
-                    </button>
-                </div>
-            `;
-            
-            // Click anywhere on row to select
-            fileRow.addEventListener('click', (e) => {
-                if (!e.target.classList.contains('file-checkbox') && 
-                    !e.target.classList.contains('preview-btn') &&
-                    !e.target.closest('.preview-btn')) {
-                    const checkbox = fileRow.querySelector('.file-checkbox');
-                    checkbox.checked = !checkbox.checked;
-                    toggleFileSelection(file.name, checkbox.checked);
-                }
-            });
-            
-            // Keyboard navigation
-            fileRow.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    const checkbox = fileRow.querySelector('.file-checkbox');
-                    checkbox.checked = !checkbox.checked;
-                    toggleFileSelection(file.name, checkbox.checked);
-                }
-            });
-            
-            filesList.appendChild(fileRow);
-        });
-        
-        updateCounts(files.length, selectedFiles.size);
-        updateSelectAllCheckbox();
+        updateFilesList();
         
     } catch (error) {
         console.error('Error loading files:', error);
@@ -134,6 +80,84 @@ async function loadFiles() {
         `;
         showNotification('Failed to load files', 'error');
     }
+}
+
+function updateFilesList() {
+    if (filesData.length === 0) {
+        filesList.innerHTML = `
+            <div class="list-empty">
+                <i class="fas fa-folder-open"></i>
+                <p>No media files found</p>
+                <p class="help-text">Place video files in the <code>media/</code> folder</p>
+            </div>
+        `;
+        updateCounts(0, 0);
+        return;
+    }
+    
+    filesList.innerHTML = '';
+    
+    filesData.forEach(file => {
+        const extension = getFileExtension(file.name);
+        const fileType = getFileType(extension);
+        const typeClass = `file-type-${extension.toLowerCase()}`;
+        const modifiedDate = file.modified ? formatDate(file.modified) : 'N/A';
+        
+        const fileRow = document.createElement('div');
+        fileRow.className = `file-row ${selectedFiles.has(file.name) ? 'selected' : ''}`;
+        fileRow.dataset.filename = file.name;
+        fileRow.tabIndex = 0;
+        
+        fileRow.innerHTML = `
+            <div class="file-checkbox-cell">
+                <input type="checkbox" class="file-checkbox" 
+                       ${selectedFiles.has(file.name) ? 'checked' : ''}
+                       onchange="toggleFileSelection('${file.name}', this.checked)">
+            </div>
+            <div class="file-info-cell">
+                <i class="fas ${getFileIcon(extension)} ${typeClass} file-icon"></i>
+                <div class="file-details">
+                    <div class="file-name" title="${file.name}">${file.name}</div>
+                    <span class="file-extension">${extension.toUpperCase()}</span>
+                </div>
+            </div>
+            <div class="file-size-cell">${file.size_display}</div>
+            <div class="file-type-cell">${fileType}</div>
+            <div class="file-date-cell">${modifiedDate}</div>
+            <div class="file-actions-cell">
+                <button class="preview-btn" onclick="showFilePreview('${file.name}')">
+                    <i class="fas fa-eye"></i>
+                </button>
+            </div>
+        `;
+        
+        // Click anywhere on row to select
+        fileRow.addEventListener('click', (e) => {
+            if (!e.target.classList.contains('file-checkbox') && 
+                !e.target.classList.contains('preview-btn') &&
+                !e.target.closest('.preview-btn')) {
+                const checkbox = fileRow.querySelector('.file-checkbox');
+                checkbox.checked = !checkbox.checked;
+                toggleFileSelection(file.name, checkbox.checked);
+            }
+        });
+        
+        // Keyboard navigation
+        fileRow.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                const checkbox = fileRow.querySelector('.file-checkbox');
+                checkbox.checked = !checkbox.checked;
+                toggleFileSelection(file.name, checkbox.checked);
+            }
+        });
+        
+        filesList.appendChild(fileRow);
+    });
+    
+    updateCounts(filesData.length, selectedFiles.size);
+    updateSelectAllCheckbox();
+    updateSortIndicators();
 }
 
 // Helper functions
@@ -165,11 +189,203 @@ function formatDate(timestamp) {
         return date.toLocaleDateString([], { 
             year: 'numeric', 
             month: 'short', 
-            day: 'numeric'
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
         });
     } catch (e) {
         return 'N/A';
     }
+}
+
+// Sorting functions
+function sortFilesData() {
+    const [field, direction] = currentSort.field.split('-');
+    const dir = direction === 'desc' ? -1 : 1;
+    
+    filesData.sort((a, b) => {
+        let valA, valB;
+        
+        switch(field) {
+            case 'name':
+                valA = a.name.toLowerCase();
+                valB = b.name.toLowerCase();
+                break;
+            case 'size':
+                valA = a.size;
+                valB = b.size;
+                break;
+            case 'date':
+                valA = a.modified;
+                valB = b.modified;
+                break;
+            case 'type':
+                valA = getFileExtension(a.name).toLowerCase();
+                valB = getFileExtension(b.name).toLowerCase();
+                break;
+            default:
+                return 0;
+        }
+        
+        if (valA < valB) return -1 * dir;
+        if (valA > valB) return 1 * dir;
+        return 0;
+    });
+}
+
+function toggleSort(field) {
+    const select = document.getElementById('sortSelect');
+    if (currentSort.field === `${field}-asc`) {
+        currentSort.field = `${field}-desc`;
+    } else if (currentSort.field === `${field}-desc`) {
+        currentSort.field = `${field}-asc`;
+    } else {
+        currentSort.field = `${field}-asc`;
+    }
+    
+    select.value = currentSort.field;
+    sortFilesData();
+    updateFilesList();
+}
+
+function sortFiles() {
+    const select = document.getElementById('sortSelect');
+    currentSort.field = select.value;
+    sortFilesData();
+    updateFilesList();
+}
+
+function updateSortIndicators() {
+    // Clear all indicators
+    document.querySelectorAll('.sort-indicator').forEach(indicator => {
+        indicator.className = 'sort-indicator';
+    });
+    
+    // Set active indicator
+    const [field, direction] = currentSort.field.split('-');
+    const indicator = document.getElementById(`sort-${field}`);
+    if (indicator) {
+        indicator.className = `sort-indicator active ${direction}`;
+    }
+}
+
+// Queue sorting
+function toggleQueueSort(field) {
+    if (queueSort.field === field) {
+        queueSort.direction = queueSort.direction === 'asc' ? 'desc' : 'asc';
+    } else {
+        queueSort.field = field;
+        queueSort.direction = 'asc';
+    }
+    
+    sortQueueData();
+    updateQueueDisplay();
+}
+
+function sortQueueData() {
+    if (!queueData) return;
+    
+    queueData.sort((a, b) => {
+        let valA, valB;
+        
+        switch(queueSort.field) {
+            case 'filename':
+                valA = a.filename.toLowerCase();
+                valB = b.filename.toLowerCase();
+                break;
+            case 'preset':
+                valA = a.preset.toLowerCase();
+                valB = b.preset.toLowerCase();
+                break;
+            case 'format':
+                valA = a.format.toLowerCase();
+                valB = b.format.toLowerCase();
+                break;
+            case 'input':
+                valA = a.input_size || 0;
+                valB = b.input_size || 0;
+                break;
+            case 'status':
+                valA = a.status.toLowerCase();
+                valB = b.status.toLowerCase();
+                break;
+            default:
+                return 0;
+        }
+        
+        const dir = queueSort.direction === 'asc' ? 1 : -1;
+        if (valA < valB) return -1 * dir;
+        if (valA > valB) return 1 * dir;
+        return 0;
+    });
+}
+
+// History sorting
+function toggleHistorySort(field) {
+    if (historySort.field === field) {
+        historySort.direction = historySort.direction === 'asc' ? 'desc' : 'asc';
+    } else {
+        historySort.field = field;
+        historySort.direction = 'asc';
+    }
+    
+    sortHistoryData();
+    updateHistoryDisplay();
+}
+
+function sortHistory() {
+    const select = document.getElementById('historySortSelect');
+    const [field, direction] = select.value.split('-');
+    historySort.field = field;
+    historySort.direction = direction;
+    sortHistoryData();
+    updateHistoryDisplay();
+}
+
+function sortHistoryData() {
+    if (!historyData) return;
+    
+    historyData.sort((a, b) => {
+        let valA, valB;
+        
+        switch(historySort.field) {
+            case 'filename':
+                valA = a.filename.toLowerCase();
+                valB = b.filename.toLowerCase();
+                break;
+            case 'preset':
+                valA = a.preset.toLowerCase();
+                valB = b.preset.toLowerCase();
+                break;
+            case 'input':
+                valA = a.input_size || 0;
+                valB = b.input_size || 0;
+                break;
+            case 'output':
+                valA = a.output_size || 0;
+                valB = b.output_size || 0;
+                break;
+            case 'reduction':
+                valA = parseFloat(a.reduction) || 0;
+                valB = parseFloat(b.reduction) || 0;
+                break;
+            case 'fps':
+                valA = a.average_fps || 0;
+                valB = b.average_fps || 0;
+                break;
+            case 'date':
+                valA = new Date(a.start_time).getTime();
+                valB = new Date(b.start_time).getTime();
+                break;
+            default:
+                return 0;
+        }
+        
+        const dir = historySort.direction === 'asc' ? 1 : -1;
+        if (valA < valB) return -1 * dir;
+        if (valA > valB) return 1 * dir;
+        return 0;
+    });
 }
 
 // Selection functions
@@ -194,7 +410,7 @@ function toggleFileSelection(filename, isSelected) {
     }
     
     updateSelectAllCheckbox();
-    updateCounts(0, selectedFiles.size);
+    updateCounts(filesData.length, selectedFiles.size);
 }
 
 function selectAllFiles() {
@@ -272,34 +488,49 @@ async function loadPresets() {
 async function loadHistory() {
     try {
         const response = await fetch('/history');
-        const history = await response.json();
+        historyData = await response.json();
         
-        historyTableBody.innerHTML = '';
+        sortHistoryData();
+        updateHistoryDisplay();
         
-        if (history.length === 0) {
-            return;
-        }
-        
-        history.reverse().forEach(job => {
-            const row = document.createElement('tr');
-            const startTime = new Date(job.start_time);
-            const timeStr = startTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-            const reduction = job.reduction || '0%';
-            
-            row.innerHTML = `
-                <td>${job.filename}</td>
-                <td>${job.preset}</td>
-                <td>${job.input_size} MB</td>
-                <td>${job.output_size} MB</td>
-                <td><span class="status-badge ${reduction.includes('-') ? 'status-error' : 'status-success'}">${reduction}</span></td>
-                <td>${timeStr}</td>
-            `;
-            
-            historyTableBody.appendChild(row);
-        });
     } catch (error) {
         console.error('Error loading history:', error);
     }
+}
+
+function updateHistoryDisplay() {
+    historyTableBody.innerHTML = '';
+    
+    if (historyData.length === 0) {
+        historyTableBody.innerHTML = `
+            <tr>
+                <td colspan="7" class="empty-history">
+                    <i class="fas fa-clock"></i>
+                    <p>No encoding history yet</p>
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    
+    historyData.forEach(job => {
+        const row = document.createElement('tr');
+        const startTime = new Date(job.start_time);
+        const timeStr = startTime.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        const reduction = job.reduction || '0%';
+        
+        row.innerHTML = `
+            <td>${job.filename}</td>
+            <td>${job.preset}</td>
+            <td>${job.input_size} MB</td>
+            <td>${job.output_size} MB</td>
+            <td><span class="status-badge ${reduction.includes('-') ? 'status-error' : 'status-success'}">${reduction}</span></td>
+            <td>${job.average_fps?.toFixed(1) || '0.0'} FPS</td>
+            <td>${timeStr}</td>
+        `;
+        
+        historyTableBody.appendChild(row);
+    });
 }
 
 // Add to queue
@@ -363,6 +594,9 @@ async function updateQueueDisplay() {
     try {
         const response = await fetch('/queue');
         const data = await response.json();
+        
+        queueData = data.queue;
+        sortQueueData();
         
         // Update global status
         statusText.textContent = data.status || 'Ready';
@@ -440,53 +674,41 @@ async function updateQueueDisplay() {
             return;
         }
         
-        // Add current job to table
-        if (data.current) {
-            const reduction = data.current.input_size && data.current.output_size 
-                ? `${((data.current.input_size - data.current.output_size) / data.current.input_size * 100).toFixed(1)}%`
-                : '-';
-            
-            const row = document.createElement('tr');
-            row.className = 'encoding';
-            row.innerHTML = `
-                <td>${data.current.filename}</td>
-                <td>${data.current.preset}</td>
-                <td>${data.current.format.toUpperCase()}</td>
-                <td>${data.current.input_size || '-'} MB</td>
-                <td>
-                    <div class="progress-track">
-                        <div class="progress-lavender" style="width: ${data.current.progress}%"></div>
-                    </div>
-                </td>
-                <td><span class="status-badge status-encoding">Encoding</span></td>
-                <td></td>
-            `;
-            queueTableBody.appendChild(row);
-        }
-        
         // Add queued jobs
-        data.queue.forEach((job, index) => {
+        queueData.forEach((job, index) => {
             const row = document.createElement('tr');
+            row.className = job.status === 'encoding' ? 'encoding' : job.status === 'completed' ? 'completed' : job.status === 'failed' ? 'failed' : job.status === 'cancelled' ? 'cancelled' : '';
+            
+            const statusClass = {
+                'queued': 'status-queued',
+                'encoding': 'status-encoding',
+                'completed': 'status-completed',
+                'failed': 'status-failed',
+                'cancelled': 'status-cancelled'
+            }[job.status] || 'status-queued';
+            
+            const statusText = job.status.charAt(0).toUpperCase() + job.status.slice(1);
+            
             row.innerHTML = `
                 <td>${job.filename}</td>
                 <td>${job.preset}</td>
                 <td>${job.format.toUpperCase()}</td>
-                <td>-</td>
+                <td>${job.input_size || '-'} MB</td>
                 <td>
                     <div class="progress-track">
                         <div class="progress-lavender" style="width: ${job.progress}%"></div>
                     </div>
                 </td>
-                <td><span class="status-badge status-queued">Queued</span></td>
+                <td><span class="status-badge ${statusClass}">${statusText}</span></td>
                 <td>
                     <div class="action-buttons">
-                        <button onclick="moveInQueue('${job.id}', 'up')" class="btn btn-sm btn-secondary" ${index === 0 ? 'disabled' : ''}>
+                        <button onclick="moveInQueue('${job.id}', 'up')" class="btn btn-sm btn-secondary" ${index === 0 || job.status !== 'queued' ? 'disabled' : ''}>
                             <i class="fas fa-arrow-up"></i>
                         </button>
-                        <button onclick="moveInQueue('${job.id}', 'down')" class="btn btn-sm btn-secondary" ${index === data.queue.length - 1 ? 'disabled' : ''}>
+                        <button onclick="moveInQueue('${job.id}', 'down')" class="btn btn-sm btn-secondary" ${index === queueData.length - 1 || job.status !== 'queued' ? 'disabled' : ''}>
                             <i class="fas fa-arrow-down"></i>
                         </button>
-                        <button onclick="removeFromQueue('${job.id}')" class="btn btn-sm btn-danger">
+                        <button onclick="removeFromQueue('${job.id}')" class="btn btn-sm btn-danger" ${job.status === 'encoding' ? 'disabled' : ''}>
                             <i class="fas fa-times"></i>
                         </button>
                     </div>
@@ -518,21 +740,27 @@ async function moveInQueue(jobId, direction) {
 
 async function removeFromQueue(jobId) {
     try {
-        await fetch('/queue/remove', {
+        const response = await fetch('/queue/remove', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ id: parseInt(jobId) })
         });
+        
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Failed to remove');
+        }
+        
         updateQueueDisplay();
         showNotification('Removed from queue', 'success');
     } catch (error) {
         console.error('Error removing from queue:', error);
-        showNotification('Failed to remove from queue', 'error');
+        showNotification(error.message, 'error');
     }
 }
 
 async function clearQueue() {
-    if (!confirm('Are you sure you want to clear the entire queue?')) return;
+    if (!confirm('Are you sure you want to clear all queued jobs? (Currently encoding job will continue)')) return;
     
     try {
         await fetch('/queue/clear', { method: 'POST' });
@@ -560,6 +788,73 @@ async function cancelJob() {
         console.error('Error cancelling job:', error);
         showNotification('Failed to cancel encoding', 'error');
     }
+}
+
+// Encoding details polling
+function startEncodingDetailsPolling() {
+    updateEncodingDetails();
+    encodingDetailsInterval = setInterval(updateEncodingDetails, 1000);
+}
+
+async function updateEncodingDetails() {
+    try {
+        const response = await fetch('/encoding-details');
+        const details = await response.json();
+        
+        // Update metrics with animation for FPS changes
+        const currentFpsElement = document.getElementById('currentFps');
+        const avgFpsElement = document.getElementById('avgFps');
+        
+        // Animate FPS changes
+        if (parseFloat(currentFpsElement.textContent) !== details.current_fps) {
+            currentFpsElement.classList.remove('fps-high', 'fps-low');
+            if (details.current_fps > 30) currentFpsElement.classList.add('fps-high');
+            else if (details.current_fps > 0 && details.current_fps < 15) currentFpsElement.classList.add('fps-low');
+        }
+        
+        if (parseFloat(avgFpsElement.textContent) !== details.average_fps) {
+            avgFpsElement.classList.remove('fps-high', 'fps-low');
+            if (details.average_fps > 30) avgFpsElement.classList.add('fps-high');
+            else if (details.average_fps > 0 && details.average_fps < 15) avgFpsElement.classList.add('fps-low');
+        }
+        
+        // Update values
+        currentFpsElement.textContent = details.current_fps.toFixed(1);
+        avgFpsElement.textContent = details.average_fps.toFixed(1);
+        document.getElementById('bitrate').textContent = `${details.bitrate} kbps`;
+        document.getElementById('eta').textContent = details.eta;
+        document.getElementById('inputFile').textContent = details.input_file;
+        document.getElementById('inputSize').textContent = details.input_size;
+        document.getElementById('outputSize').textContent = details.output_size;
+        document.getElementById('sizeReduction').textContent = details.size_reduction;
+        document.getElementById('encodingPreset').textContent = details.preset;
+        document.getElementById('encodingFormat').textContent = details.format;
+        document.getElementById('timeElapsed').textContent = details.time_elapsed;
+        document.getElementById('timeRemaining').textContent = details.time_remaining;
+        
+        // Update encoding log
+        const encodingLog = document.getElementById('encodingLog');
+        if (details.encoding_log && details.encoding_log.length > 0) {
+            encodingLog.innerHTML = '';
+            details.encoding_log.forEach(log => {
+                const logEntry = document.createElement('div');
+                logEntry.className = `log-entry ${log.type}`;
+                logEntry.textContent = log.message;
+                encodingLog.appendChild(logEntry);
+            });
+            
+            // Auto-scroll to bottom
+            encodingLog.scrollTop = encodingLog.scrollHeight;
+        }
+        
+    } catch (error) {
+        console.error('Error updating encoding details:', error);
+    }
+}
+
+function clearEncodingLog() {
+    const encodingLog = document.getElementById('encodingLog');
+    encodingLog.innerHTML = '<div class="log-entry">Log cleared</div>';
 }
 
 // File preview
@@ -704,7 +999,7 @@ async function handlePresetUpload() {
 // System stats
 function startSystemStatsPolling() {
     updateSystemStats();
-    systemStatsInterval = setInterval(updateSystemStats, 3000);
+    systemStatsInterval = setInterval(updateSystemStats, 2000);
 }
 
 async function updateSystemStats() {
@@ -712,12 +1007,13 @@ async function updateSystemStats() {
         const response = await fetch('/system-stats');
         const stats = await response.json();
         
-        document.getElementById('cpuValue').textContent = `${stats.cpu.toFixed(1)}%`;
-        document.getElementById('ramValue').textContent = `${stats.ram.toFixed(1)}%`;
-        document.getElementById('diskValue').textContent = `${stats.disk.toFixed(1)}%`;
-        document.getElementById('netValue').textContent = `${stats.network.sent} ↑ / ${stats.network.recv} ↓`;
-        document.getElementById('processValue').textContent = `${stats.process_cpu.toFixed(1)}% / ${stats.process_ram}`;
-        document.getElementById('timeValue').textContent = stats.timestamp;
+        // Update floating bar
+        document.getElementById('floatingCpu').textContent = `${stats.cpu.toFixed(1)}%`;
+        document.getElementById('floatingRam').textContent = `${stats.ram.toFixed(1)}%`;
+        document.getElementById('floatingDisk').textContent = `${stats.disk.toFixed(1)}%`;
+        document.getElementById('floatingNet').textContent = `${stats.network.sent_mb.toFixed(1)}/${stats.network.recv_mb.toFixed(1)}`;
+        document.getElementById('floatingProcess').textContent = `${stats.process_cpu.toFixed(1)}% ${stats.process_ram_mb.toFixed(1)}MB`;
+        document.getElementById('floatingTime').textContent = stats.timestamp;
         
     } catch (error) {
         console.error('Error updating system stats:', error);
@@ -744,6 +1040,133 @@ function updateStatusIndicator(status) {
     }
 }
 
+// Floating status bar
+function toggleFloatingStatus() {
+    isFloatingBarCollapsed = !isFloatingBarCollapsed;
+    
+    if (isFloatingBarCollapsed) {
+        floatingStatusBar.classList.add('collapsed');
+        floatingToggleIcon.className = 'fas fa-chevron-up';
+    } else {
+        floatingStatusBar.classList.remove('collapsed');
+        floatingToggleIcon.className = 'fas fa-chevron-down';
+    }
+    
+    // Save state
+    localStorage.setItem('floatingBarCollapsed', isFloatingBarCollapsed);
+}
+
+function setupFloatingBarDrag() {
+    floatingStatusBar.addEventListener('mousedown', startDrag);
+    floatingStatusBar.addEventListener('touchstart', startDragTouch);
+    
+    function startDrag(e) {
+        e.preventDefault();
+        isDragging = true;
+        dragOffset.x = e.clientX - floatingStatusBar.offsetLeft;
+        dragOffset.y = e.clientY - floatingStatusBar.offsetTop;
+        
+        floatingStatusBar.classList.add('dragging');
+        document.addEventListener('mousemove', drag);
+        document.addEventListener('mouseup', stopDrag);
+    }
+    
+    function startDragTouch(e) {
+        if (e.touches.length === 1) {
+            e.preventDefault();
+            isDragging = true;
+            const touch = e.touches[0];
+            dragOffset.x = touch.clientX - floatingStatusBar.offsetLeft;
+            dragOffset.y = touch.clientY - floatingStatusBar.offsetTop;
+            
+            floatingStatusBar.classList.add('dragging');
+            document.addEventListener('touchmove', dragTouch, { passive: false });
+            document.addEventListener('touchend', stopDragTouch);
+        }
+    }
+    
+    function drag(e) {
+        if (!isDragging) return;
+        e.preventDefault();
+        
+        let x = e.clientX - dragOffset.x;
+        let y = e.clientY - dragOffset.y;
+        
+        // Constrain to window bounds
+        const maxX = window.innerWidth - floatingStatusBar.offsetWidth;
+        const maxY = window.innerHeight - floatingStatusBar.offsetHeight;
+        
+        x = Math.max(0, Math.min(x, maxX));
+        y = Math.max(20, Math.min(y, maxY - 20)); // Keep some margin from bottom
+        
+        floatingStatusBar.style.left = `${x}px`;
+        floatingStatusBar.style.top = `${y}px`;
+        floatingStatusBar.style.transform = 'none';
+        
+        // Save position
+        saveFloatingBarPosition(x, y);
+    }
+    
+    function dragTouch(e) {
+        if (!isDragging || e.touches.length !== 1) return;
+        e.preventDefault();
+        
+        const touch = e.touches[0];
+        let x = touch.clientX - dragOffset.x;
+        let y = touch.clientY - dragOffset.y;
+        
+        // Constrain to window bounds
+        const maxX = window.innerWidth - floatingStatusBar.offsetWidth;
+        const maxY = window.innerHeight - floatingStatusBar.offsetHeight;
+        
+        x = Math.max(0, Math.min(x, maxX));
+        y = Math.max(20, Math.min(y, maxY - 20));
+        
+        floatingStatusBar.style.left = `${x}px`;
+        floatingStatusBar.style.top = `${y}px`;
+        floatingStatusBar.style.transform = 'none';
+        
+        // Save position
+        saveFloatingBarPosition(x, y);
+    }
+    
+    function stopDrag() {
+        isDragging = false;
+        floatingStatusBar.classList.remove('dragging');
+        document.removeEventListener('mousemove', drag);
+        document.removeEventListener('mouseup', stopDrag);
+    }
+    
+    function stopDragTouch() {
+        isDragging = false;
+        floatingStatusBar.classList.remove('dragging');
+        document.removeEventListener('touchmove', dragTouch);
+        document.removeEventListener('touchend', stopDragTouch);
+    }
+}
+
+function saveFloatingBarPosition(x, y) {
+    localStorage.setItem('floatingBarPosition', JSON.stringify({ x, y }));
+}
+
+function loadFloatingBarPosition() {
+    const saved = localStorage.getItem('floatingBarPosition');
+    const collapsed = localStorage.getItem('floatingBarCollapsed') === 'true';
+    
+    if (saved) {
+        const { x, y } = JSON.parse(saved);
+        floatingStatusBar.style.left = `${x}px`;
+        floatingStatusBar.style.top = `${y}px`;
+        floatingStatusBar.style.transform = 'none';
+    }
+    
+    if (collapsed) {
+        isFloatingBarCollapsed = true;
+        floatingStatusBar.classList.add('collapsed');
+        floatingToggleIcon.className = 'fas fa-chevron-up';
+    }
+}
+
 // Polling
 function startPolling() {
     updateQueueDisplay();
@@ -752,7 +1175,6 @@ function startPolling() {
 
 // Refresh files
 function refreshFiles() {
-    const filesList = document.getElementById('filesList');
     filesList.innerHTML = `
         <div class="list-loading">
             <i class="fas fa-spinner fa-spin"></i> Refreshing files...
@@ -887,6 +1309,12 @@ function setupKeyboardShortcuts() {
             e.preventDefault();
             addToQueue();
         }
+        
+        // F5 to refresh files
+        if (e.key === 'F5') {
+            e.preventDefault();
+            refreshFiles();
+        }
     });
 }
 
@@ -894,4 +1322,18 @@ function setupKeyboardShortcuts() {
 window.addEventListener('beforeunload', () => {
     if (pollInterval) clearInterval(pollInterval);
     if (systemStatsInterval) clearInterval(systemStatsInterval);
+    if (encodingDetailsInterval) clearInterval(encodingDetailsInterval);
+});
+
+// Handle window resize
+window.addEventListener('resize', () => {
+    // Re-center floating bar if it's off screen
+    const rect = floatingStatusBar.getBoundingClientRect();
+    if (rect.right > window.innerWidth || rect.bottom > window.innerHeight || rect.left < 0 || rect.top < 0) {
+        floatingStatusBar.style.left = '50%';
+        floatingStatusBar.style.top = 'auto';
+        floatingStatusBar.style.bottom = '20px';
+        floatingStatusBar.style.transform = 'translateX(-50%)';
+        saveFloatingBarPosition(floatingStatusBar.offsetLeft, floatingStatusBar.offsetTop);
+    }
 });
